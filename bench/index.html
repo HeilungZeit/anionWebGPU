@@ -30,6 +30,12 @@
     <input type="file" id="file" accept="image/*,video/*">
     <label>время видео, с <input type="number" id="seek" value="30" min="0" step="1" style="width:5em"></label>
     <span class="muted">Без файла — синтетический кадр с JPEG-артефактами.</span>
+    <div>
+      <label>длительность ролика, с <input type="number" id="duration" value="20" min="2" step="1" style="width:5em"></label>
+      <button id="runVideo" disabled>Прогнать ролик</button>
+      <span class="muted">Ролик играется с «времени видео» дважды на режим — без ворот и с ними;
+        исходник — родное разрешение ролика, цель — по кратности первого сценария.</span>
+    </div>
   </fieldset>
 
   <fieldset>
@@ -43,6 +49,8 @@
       <label>модель Denoise (кандидат)
         <select id="denoiseModel"><option>VL</option><option>L</option><option>M</option></select></label>
       <label><input type="checkbox" id="f16"> shader-f16</label>
+      <label><input type="checkbox" id="skipUnchanged"> пропуск повторов</label>
+      <label>порог, уровни 8 бит <input type="number" id="threshold" value="0" min="0" step="1" style="width:3em"></label>
       <label>итераций <input type="number" id="iters" value="60" min="5" style="width:5em"></label>
       <label><input type="checkbox" id="baseline" checked> сравнивать с эталоном</label>
       <select id="reference">
@@ -51,6 +59,7 @@
         <option value="ref/e2">ref/e2 — после Э2 (края: clamp, как в mpv)</option>
         <option value="ref/e5">ref/e5 — после Э5</option>
         <option value="ref/e7">ref/e7 — после Э7 (Downscale Catmull-Rom)</option>
+        <option value="ref/e8">ref/e8 — после Э8 (ворота повторов, без упаковки)</option>
       </select>
       <label><input type="checkbox" id="ignoreEdge"> край 16px не в вердикте</label>
     </div>

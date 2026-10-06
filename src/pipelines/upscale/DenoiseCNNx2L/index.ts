@@ -5,10 +5,10 @@ import model from './model';
 
 export class DenoiseCNNx2L extends CNN {
   constructor({
-    device, inputTexture, precision, deRing,
+    device, inputTexture, precision, deRing, gate,
   }: CNNModelPipelineDescriptor) {
     super({
-      device, inputTexture, model, name: 'DenoiseCNNx2L', precision, deRing,
+      device, inputTexture, model, name: 'DenoiseCNNx2L', precision, deRing, gate,
     });
   }
 }

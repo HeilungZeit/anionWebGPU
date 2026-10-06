@@ -1,11 +1,14 @@
 import { Anime4KPipeline } from '../../interfaces';
 import statsWGSL from './shaders/stats.wgsl';
 import deringWGSL from './shaders/dering.wgsl';
+import { FrameGate, Launch, launcher } from '../FrameGate';
 
 export interface ClampStatsPipelineDescriptor {
   device: GPUDevice;
   /** Исходный кадр. */
   inputTexture: GPUTexture;
+  /** Ворота повторов: проход запускается косвенно и на повторе пропускается. */
+  gate?: FrameGate;
   name?: string;
 }
 
@@ -26,7 +29,11 @@ export class ClampStats implements Anime4KPipeline {
 
   ready: Promise<void>;
 
-  constructor({ device, inputTexture, name = 'clamp stats' }: ClampStatsPipelineDescriptor) {
+  private launch: Launch;
+
+  constructor({
+    device, inputTexture, gate, name = 'clamp stats',
+  }: ClampStatsPipelineDescriptor) {
     this.name = name;
     this.outputTexture = device.createTexture({
       label: `${name}: statsmax_texture`,
@@ -34,6 +41,7 @@ export class ClampStats implements Anime4KPipeline {
       format: 'r32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     });
+    this.launch = launcher(gate, Math.ceil(inputTexture.width / 8), Math.ceil(inputTexture.height / 8));
     const layout = device.createBindGroupLayout({
       label: `${name} layout`,
       entries: [
@@ -76,10 +84,7 @@ export class ClampStats implements Anime4KPipeline {
     const pass = encoder.beginComputePass({ label: this.name });
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);
-    pass.dispatchWorkgroups(
-      Math.ceil(this.outputTexture.width / 8),
-      Math.ceil(this.outputTexture.height / 8),
-    );
+    this.launch.dispatch(pass);
     pass.end();
   }
 

@@ -375,6 +375,10 @@ async function build(lib, mode, device, input, src, dst, extra) {
   return { preset, buildMs: performance.now() - start - 20, maxGap: Math.max(maxGap, performance.now() - last) };
 }
 
+function gateOptions() {
+  return { skipUnchanged: $('skipUnchanged').checked, unchangedThreshold: Number($('threshold').value) || 0 };
+}
+
 function fmt(ms) { return ms === undefined ? '—' : ms.toFixed(2); }
 
 async function run() {
@@ -405,7 +409,11 @@ async function run() {
         log(`▶ ${label}`);
 
         // Эталон всегда VL; при M/L сверка показывает разницу моделей, а не ошибку.
-        const built = await build(candidateLib, mode, device, input, sc.src, sc.dst, { denoiseModel, precision, model: artModel });
+        // С пропуском повторов на неподвижном кадре считается только первый:
+        // замер показывает цену повтора (сравнение кадров), а не цепочки.
+        const built = await build(candidateLib, mode, device, input, sc.src, sc.dst, {
+          denoiseModel, precision, model: artModel, ...gateOptions(),
+        });
         const cand = built.preset;
         log(`  сборка кандидата: ${fmt(built.buildMs)} мс, самая долгая заморозка страницы ${fmt(built.maxGap)} мс`);
         const candRes = await measure(device, hasTimestamps, candidateLib, cand, iterations);
@@ -465,5 +473,138 @@ async function run() {
   }
 }
 
+// ---------- прогон ролика ----------
+
+/**
+ * Играет ролик `seconds` секунд с текущей позиции и на каждый показанный кадр
+ * зовёт `onFrame`. Кадры, показанные, пока onFrame ждал GPU, не обработаны —
+ * их число возвращается как `missed` (по счётчику presentedFrames).
+ */
+function playSegment(video, seconds, onFrame) {
+  const start = video.currentTime;
+  let missed = 0; let lastPresented = null;
+  return new Promise((done, fail) => {
+    const step = async (now, meta) => {
+      try {
+        if (lastPresented !== null) missed += Math.max(0, meta.presentedFrames - lastPresented - 1);
+        lastPresented = meta.presentedFrames;
+        await onFrame();
+        if (video.currentTime - start >= seconds || video.ended) {
+          video.pause();
+          done({ missed });
+          return;
+        }
+        video.requestVideoFrameCallback(step);
+      } catch (error) {
+        video.pause();
+        fail(error);
+      }
+    };
+    video.requestVideoFrameCallback(step);
+    video.play().catch(fail);
+  });
+}
+
+/** Гистограмма max |Δ| кадра с опорным, в уровнях 8 бит. */
+const DIFF_BUCKETS = [[0, 0], [1, 1], [2, 2], [3, 4], [5, 8], [9, 32], [33, Infinity]];
+
+/**
+ * Реальный ролик: доля повторов и время кадра (копия + цепочка, до
+ * onSubmittedWorkDone — как обратное давление в anion) без ворот и с ними.
+ */
+async function runVideo() {
+  $('log').textContent = ''; $('results').innerHTML = ''; $('views').innerHTML = '';
+  $('run').disabled = true; $('runVideo').disabled = true;
+  gpuErrors = 0;
+  try {
+    const file = $('file').files[0];
+    if (!file?.type.startsWith('video/')) throw new Error('выберите видеофайл');
+    const { device, useF16 } = await initDevice();
+    const precision = useF16 ? 'f16' : 'f32';
+    const video = document.createElement('video');
+    video.muted = true; video.playsInline = true;
+    video.src = URL.createObjectURL(file);
+    await new Promise((ok, fail) => {
+      video.addEventListener('loadeddata', ok, { once: true });
+      video.addEventListener('error', fail, { once: true });
+    });
+    const src = [video.videoWidth, video.videoHeight];
+    const sc = SCENARIOS.find((s) => s.id === document.querySelector('input[name=scenario]:checked')?.value) ?? SCENARIOS[0];
+    const k = sc.dst[0] / sc.src[0];
+    const dst = [Math.round(src[0] * k), Math.round(src[1] * k)];
+    const seconds = Math.max(2, Number($('duration').value) || 20);
+    const seek = Math.min(Number($('seek').value) || 0, video.duration - seconds);
+    const threshold = Number($('threshold').value) || 0;
+    const modes = [...document.querySelectorAll('input[name=mode]:checked')].map((e) => e.value);
+    const input = device.createTexture({
+      size: src,
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
+    });
+    log(`ролик ${src.join('×')} → ${dst.join('×')}, ${seconds} с с ${seek.toFixed(1)} с, порог ${threshold}`);
+
+    const rows = [];
+    for (const mode of modes) {
+      for (const skipUnchanged of [false, true]) {
+        const label = `${mode}${useF16 ? '/f16' : ''} · ${skipUnchanged ? `с воротами (порог ${threshold})` : 'без ворот'}`;
+        log(`▶ ${label}`);
+        const { preset } = await build(candidateLib, mode, device, input, src, dst, {
+          denoiseModel: $('denoiseModel').value, precision, model: $('artModel').value,
+          skipUnchanged, unchangedThreshold: threshold,
+        });
+        // Сборка прогнала один кадр; счётчики ворот — с начала ролика.
+        const before = preset.gate ? await preset.gate.readStats() : null;
+        video.currentTime = seek;
+        await new Promise((ok) => { video.addEventListener('seeked', ok, { once: true }); });
+
+        const times = []; const hist = DIFF_BUCKETS.map(() => 0);
+        const { missed } = await playSegment(video, seconds, async () => {
+          const start = performance.now();
+          device.queue.copyExternalImageToTexture({ source: video }, { texture: input }, src);
+          const encoder = device.createCommandEncoder();
+          preset.pass(encoder);
+          device.queue.submit([encoder.finish()]);
+          await device.queue.onSubmittedWorkDone();
+          times.push(performance.now() - start);
+          if (preset.gate) {
+            const { lastDiff } = await preset.gate.readStats();
+            hist[DIFF_BUCKETS.findIndex(([lo, hi]) => lastDiff >= lo && lastDiff <= hi)] += 1;
+          }
+        });
+        let skipped = null;
+        if (preset.gate) {
+          const after = await preset.gate.readStats();
+          skipped = (after.skipped - before.skipped) / (after.frames - before.frames);
+          log(`  max |Δ| с опорным (уровни 8 бит): ${DIFF_BUCKETS.map(([lo, hi], i) => `${lo === hi ? lo : `${lo}–${hi === Infinity ? '∞' : hi}`}: ${hist[i]}`).join(' · ')}`);
+        }
+        const mean = times.reduce((a, b) => a + b, 0) / times.length;
+        rows.push({ label, frames: times.length, missed, mean, p95: p95(times), skipped });
+      }
+    }
+    input.destroy();
+    if (gpuErrors) log(`GPU-ошибки: ${gpuErrors} — замер недостоверен`);
+
+    $('results').innerHTML = `
+      <table>
+        <tr><th>прогон</th><th>кадров</th><th>пропущено плеером</th><th>кадр, мс (среднее / p95)</th><th>повторов</th></tr>
+        ${rows.map((r) => `<tr><td>${r.label}</td><td>${r.frames}</td><td>${r.missed}</td>
+          <td>${fmt(r.mean)} / ${fmt(r.p95)}</td>
+          <td>${r.skipped === null ? '—' : `${(r.skipped * 100).toFixed(1)}%`}</td></tr>`).join('')}
+      </table>
+      <p class="muted">«Кадр» — копия кадра + цепочка до onSubmittedWorkDone, как в цикле anion.
+      «Пропущено плеером» — кадры, показанные, пока стенд ждал GPU: при них соседние обработанные
+      кадры дальше друг от друга, и повторов меньше, чем в ролике на самом деле.</p>`;
+    log('готово');
+    device.destroy();
+  } catch (error) {
+    log(`ошибка: ${error?.message ?? error}`);
+  } finally {
+    $('run').disabled = false; $('runVideo').disabled = false;
+  }
+}
+
 $('run').addEventListener('click', run);
-$('run').disabled = false; // модуль с top-level await загружен
+$('runVideo').addEventListener('click', runVideo);
+// Модуль с top-level await загружен.
+$('run').disabled = false;
+$('runVideo').disabled = false;

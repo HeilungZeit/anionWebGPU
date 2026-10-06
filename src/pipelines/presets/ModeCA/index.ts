@@ -1,4 +1,4 @@
-import { ClampStats, Downscale } from '../../helpers';
+import { ClampStats, Downscale, FrameGate } from '../../helpers';
 import { Anime4KPipeline, ModeCPresetPipelineDescriptor, whenReady } from '../../interfaces';
 import { CNNM } from '../../restore';
 import {
@@ -13,6 +13,9 @@ export class ModeCA implements Anime4KPipeline {
 
   /** Все шейдеры цепочки скомпилированы (в фоне); до этого pass() не вызывать. */
   ready: Promise<void>;
+
+  /** Ворота повторов (skipUnchanged): счётчики — gate.readStats(). */
+  gate?: FrameGate;
 
   /**
    * Constructs a new instance of the preset class.
@@ -33,6 +36,8 @@ export class ModeCA implements Anime4KPipeline {
     targetDimensions,
     denoiseModel = 'VL',
     precision = 'f32',
+    skipUnchanged = false,
+    unchangedThreshold = 0,
   }: ModeCPresetPipelineDescriptor) {
     this.pipelines = [];
     const chain = planModeC(nativeDimensions, targetDimensions);
@@ -40,18 +45,29 @@ export class ModeCA implements Anime4KPipeline {
 
     // Clamp Highlights: статистика по исходнику, зажим (deRing) — в последнем
     // звене (CNNM или CNNx2M), в разрешении выхода, как HOOK PREKERNEL в mpv.
-    const stats = new ClampStats({ device, inputTexture });
+    // Ворота — первыми: остальные звенья запускаются из их буфера.
+    const gate = skipUnchanged
+      ? new FrameGate({ device, inputTexture, threshold: unchangedThreshold })
+      : undefined;
+    if (gate) this.pipelines.push(gate);
+    this.gate = gate;
+
+    const stats = new ClampStats({ device, inputTexture, gate });
     this.pipelines.push(stats);
 
     if (chain.upscale1) {
       const Denoise = { M: DenoiseCNNx2M, L: DenoiseCNNx2L, VL: DenoiseCNNx2VL }[denoiseModel];
-      const upscale1 = new Denoise({ device, inputTexture: currentTexture, precision });
+      const upscale1 = new Denoise({
+        device, inputTexture: currentTexture, precision, gate,
+      });
       this.pipelines.push(upscale1);
       currentTexture = upscale1.getOutputTexture();
     }
 
     if (chain.downscale2) {
-      const downscale = new Downscale({ device, inputTexture: currentTexture, targetDimensions });
+      const downscale = new Downscale({
+        device, inputTexture: currentTexture, targetDimensions, gate,
+      });
       this.pipelines.push(downscale);
       currentTexture = downscale.getOutputTexture();
     }
@@ -64,6 +80,7 @@ export class ModeCA implements Anime4KPipeline {
           width: Math.ceil(targetDimensions.width / 2),
           height: Math.ceil(targetDimensions.height / 2),
         },
+        gate,
       });
       this.pipelines.push(downscale);
       currentTexture = downscale.getOutputTexture();
@@ -74,13 +91,14 @@ export class ModeCA implements Anime4KPipeline {
       inputTexture: currentTexture,
       precision,
       deRing: chain.upscale2 ? undefined : stats.getOutputTexture(),
+      gate,
     });
     this.pipelines.push(restore);
     currentTexture = restore.getOutputTexture();
 
     if (chain.upscale2) {
       const upscale2 = new CNNx2M({
-        device, inputTexture: currentTexture, precision, deRing: stats.getOutputTexture(),
+        device, inputTexture: currentTexture, precision, deRing: stats.getOutputTexture(), gate,
       });
       this.pipelines.push(upscale2);
       currentTexture = upscale2.getOutputTexture();

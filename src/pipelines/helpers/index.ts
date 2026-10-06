@@ -5,3 +5,4 @@ export * from './Original';
 export * from './Downscale';
 export * from './ClampHighlights';
 export * from './CNN';
+export * from './FrameGate';

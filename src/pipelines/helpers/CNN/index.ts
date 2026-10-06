@@ -1,6 +1,7 @@
 import { Anime4KPipeline, CNNPrecision } from '../../interfaces';
 import { CNNModel } from './model';
 import { DeRingEpilogue } from '../ClampHighlights/stats';
+import { FrameGate, Launch, launcher } from '../FrameGate';
 
 export * from './model';
 
@@ -15,6 +16,8 @@ export interface CNNPipelineDescriptor {
    * (зажим ореолов) — без отдельного прохода в разрешении выхода.
    */
   deRing?: GPUTexture;
+  /** Ворота повторов: стадии запускаются косвенно и на повторе пропускаются. */
+  gate?: FrameGate;
 }
 
 // Шейдеры генераторов пишут типы через псевдонимы T4/M4/A4/S1.
@@ -23,12 +26,19 @@ const PRELUDE = {
   f16: 'enable f16;\nalias T4 = vec4h;\nalias M4 = mat4x4h;\nalias A4 = vec4h;\nalias S1 = f16;\n',
 };
 
+// Чтение упакованной rgba32uint (CNN_PACK): половина текселя — 4 канала f16.
+const UNPACK = {
+  f32: 'fn unpack_half(a: u32, b: u32) -> T4 { return T4(unpack2x16float(a), unpack2x16float(b)); }\n',
+  f16: 'fn unpack_half(a: u32, b: u32) -> T4 { return T4(bitcast<vec2h>(a), bitcast<vec2h>(b)); }\n',
+};
+
 interface CompiledStage {
   /** Появляется, когда createComputePipelineAsync завершится. */
   pipeline?: GPUComputePipeline;
   bindGroup: GPUBindGroup;
   /** Группа 1 финальной стадии — статистика для deRing(). */
   deRing?: GPUBindGroup;
+  launch: Launch;
 }
 
 /**
@@ -53,7 +63,7 @@ export class CNN implements Anime4KPipeline {
   private height: number;
 
   constructor({
-    device, inputTexture, model, name = 'cnn', precision = 'f32', deRing,
+    device, inputTexture, model, name = 'cnn', precision = 'f32', deRing, gate,
   }: CNNPipelineDescriptor) {
     this.name = name;
     if (precision === 'f16' && !device.features.has('shader-f16')) {
@@ -64,12 +74,13 @@ export class CNN implements Anime4KPipeline {
     this.width = inputTexture.width;
     this.height = inputTexture.height;
 
+    const packed = new Set(model.packed);
     const textures: GPUTexture[] = [inputTexture];
     for (let i = 1; i < model.textures; i += 1) {
       textures.push(device.createTexture({
         label: `${name}: feature ${i}`,
         size: [this.width, this.height, 1],
-        format: 'rgba16float',
+        format: packed.has(i) ? 'rgba32uint' : 'rgba16float',
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
       }));
     }
@@ -88,7 +99,11 @@ export class CNN implements Anime4KPipeline {
       const entries: GPUBindGroupEntry[] = [];
       const addTexture = (texture: GPUTexture) => {
         const binding = layoutEntries.length;
-        layoutEntries.push({ binding, visibility: GPUShaderStage.COMPUTE, texture: {} });
+        layoutEntries.push({
+          binding,
+          visibility: GPUShaderStage.COMPUTE,
+          texture: texture.format === 'rgba32uint' ? { sampleType: 'uint' } : {},
+        });
         entries.push({ binding, resource: texture.createView() });
       };
       const addStorage = (texture: GPUTexture) => {
@@ -96,7 +111,7 @@ export class CNN implements Anime4KPipeline {
         layoutEntries.push({
           binding,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: { access: 'write-only', format: 'rgba16float' },
+          storageTexture: { access: 'write-only', format: texture.format },
         });
         entries.push({ binding, resource: texture.createView() });
       };
@@ -117,6 +132,11 @@ export class CNN implements Anime4KPipeline {
       const compiled: CompiledStage = {
         bindGroup: device.createBindGroup({ label: `${name}: stage ${n}`, layout, entries }),
         deRing: final ? epilogue.bindGroup : undefined,
+        launch: launcher(
+          gate,
+          Math.ceil(this.width / (8 * this.block[0])),
+          Math.ceil(this.height / (8 * this.block[1])),
+        ),
       };
       this.stages.push(compiled);
       // Компиляция — в фоне: синхронный createComputePipeline занимал
@@ -131,7 +151,7 @@ export class CNN implements Anime4KPipeline {
             label: `${name}: stage ${n}`,
             // enable-директивы — до любых объявлений, поэтому subgroups первым.
             code: (stage.subgroups ? 'enable subgroups;\n' : '')
-              + PRELUDE[this.precision] + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
+              + PRELUDE[this.precision] + (packed.size ? UNPACK[this.precision] : '') + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
           }),
           entryPoint: 'computeMain',
           constants: final ? epilogue.constants : {},
@@ -158,10 +178,7 @@ export class CNN implements Anime4KPipeline {
       pass.setPipeline(stage.pipeline);
       pass.setBindGroup(0, stage.bindGroup);
       if (stage.deRing) pass.setBindGroup(1, stage.deRing);
-      pass.dispatchWorkgroups(
-        Math.ceil(this.width / (8 * this.block[0])),
-        Math.ceil(this.height / (8 * this.block[1])),
-      );
+      stage.launch.dispatch(pass);
     });
     pass.end();
   }

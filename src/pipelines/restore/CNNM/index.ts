@@ -5,10 +5,10 @@ import model from './model';
 
 export class CNNM extends CNN {
   constructor({
-    device, inputTexture, precision, deRing,
+    device, inputTexture, precision, deRing, gate,
   }: CNNModelPipelineDescriptor) {
     super({
-      device, inputTexture, model, name: 'CNNM', precision, deRing,
+      device, inputTexture, model, name: 'CNNM', precision, deRing, gate,
     });
   }
 }

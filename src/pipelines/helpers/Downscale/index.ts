@@ -1,6 +1,7 @@
 import { Anime4KPipeline, DownscalePipelineDescriptor } from '../../interfaces';
 import downscaleWGSL from './shaders/downscale.wgsl';
 import { DeRingEpilogue } from '../ClampHighlights/stats';
+import { Launch, launcher } from '../FrameGate';
 
 /**
  * Уменьшение до `targetDimensions`. По умолчанию — Catmull-Rom с ядром,
@@ -11,7 +12,7 @@ import { DeRingEpilogue } from '../ClampHighlights/stats';
 export class Downscale implements Anime4KPipeline {
   outputTexture: GPUTexture;
 
-  steps: { pipeline?: GPUComputePipeline, bindGroup: GPUBindGroup, output: GPUTexture }[];
+  steps: { pipeline?: GPUComputePipeline, bindGroup: GPUBindGroup, output: GPUTexture, launch: Launch }[];
 
   ready: Promise<void>;
 
@@ -26,6 +27,7 @@ export class Downscale implements Anime4KPipeline {
     targetDimensions,
     filter = 'catmull-rom',
     deRing,
+    gate,
     name = 'downscale',
   }: DownscalePipelineDescriptor) {
     this.name = name;
@@ -75,6 +77,7 @@ export class Downscale implements Anime4KPipeline {
           ],
         }),
         output,
+        launch: launcher(gate, Math.ceil(output.width / 8), Math.ceil(output.height / 8)),
       };
       // Компиляция в фоне — см. ready.
       compiling.push(device.createComputePipelineAsync({
@@ -116,14 +119,14 @@ export class Downscale implements Anime4KPipeline {
 
   pass(encoder: GPUCommandEncoder): void {
     const pass = encoder.beginComputePass({ label: this.name });
-    this.steps.forEach(({ pipeline, bindGroup, output }) => {
+    this.steps.forEach(({ pipeline, bindGroup, launch }) => {
       if (!pipeline) {
         throw new Error(`${this.name}: шейдеры ещё компилируются — дождитесь ready.`);
       }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
       pass.setBindGroup(1, this.deRing);
-      pass.dispatchWorkgroups(Math.ceil(output.width / 8), Math.ceil(output.height / 8));
+      launch.dispatch(pass);
     });
     pass.end();
   }

@@ -142,10 +142,63 @@ TILE = os.environ.get("CNN_TILE", "0") == "1"
 #   CNN_SUBGROUPS=1 — соседей 3×3 брать у соседних потоков (subgroupShuffle),
 #                    из текстуры читать только свой пиксель и края subgroup.
 SUBGROUPS = os.environ.get("CNN_SUBGROUPS", "0") == "1"
+#   CNN_PACK=1      — выходы стадии парами слоёв в одну rgba32uint (8 каналов
+#                    f16 через pack2x16float): чтений текстур и привязок вдвое
+#                    меньше при том же объёме памяти. Только без плитки и
+#                    subgroups.
+PACK = os.environ.get("CNN_PACK", "0") == "1"
+assert not (PACK and (TILE or SUBGROUPS)), "CNN_PACK — только без CNN_TILE и CNN_SUBGROUPS"
+
+
+@dataclass
+class Unit:
+  """Где лежит выход слоя: номер текстуры модели и половина (None — rgba16float)."""
+  texture: int
+  half: int | None = None
+
+
+def assign_units(stages: list[Stage]) -> tuple[dict[str, Unit], list[int]]:
+  """Текстуры модели: 0 — вход (MAIN), дальше выходы стадий по порядку."""
+  units = {"MAIN": Unit(0)}
+  packed: list[int] = []
+  count = 1
+  for stage in stages:
+    if stage.final:
+      continue
+    saves = [l.save for l in stage.layers]
+    step = 2 if PACK else 1
+    for k in range(0, len(saves), step):
+      group = saves[k:k + step]
+      if len(group) == 2:
+        packed.append(count)
+        units[group[0]] = Unit(count, 0)
+        units[group[1]] = Unit(count, 1)
+      else:
+        units[group[0]] = Unit(count)
+      count += 1
+  return units, packed
+
+
+def input_units(stage: Stage, units: dict[str, Unit]) -> list[int]:
+  """Текстуры-входы стадии в порядке привязки, без повторов."""
+  ids: list[int] = []
+  for name in stage.inputs:
+    if units[name].texture not in ids:
+      ids.append(units[name].texture)
+  return ids
+
+
+def output_units(stage: Stage, units: dict[str, Unit]) -> list[int]:
+  ids: list[int] = []
+  for layer in stage.layers:
+    if units[layer.save].texture not in ids:
+      ids.append(units[layer.save].texture)
+  return ids
 
 
 
-def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
+def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int,
+               units: dict[str, Unit], packed: list[int]) -> str:
   out = []
   emit = out.append
   emit(f"// {stage.layers[0].desc}")
@@ -154,16 +207,21 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
   if stage.final:
     emit("// deRing() — эпилог Clamp Highlights, его добавляет helpers/CNN.")
   binding = 0
-  for i, name in enumerate(stage.inputs):
-    emit(f"@group(0) @binding({binding}) var tex_{i}: texture_2d<f32>; // {name}")
+  ins = input_units(stage, units)
+  for u, tid in enumerate(ins):
+    names = ", ".join(n for n in stage.inputs if units[n].texture == tid)
+    kind = "u32" if tid in packed else "f32"
+    emit(f"@group(0) @binding({binding}) var tex_{u}: texture_2d<{kind}>; // {names}")
     binding += 1
   if stage.final:
     emit(f"@group(0) @binding({binding}) var tex_main: texture_2d<f32>; // MAIN")
     emit(f"@group(0) @binding({binding + 1}) var main_sampler: sampler;")
     emit(f"@group(0) @binding({binding + 2}) var tex_out: texture_storage_2d<rgba16float, write>;")
   else:
-    for j, layer in enumerate(stage.layers):
-      emit(f"@group(0) @binding({binding + j}) var out_{j}: texture_storage_2d<rgba16float, write>; // {layer.save}")
+    for o, tid in enumerate(output_units(stage, units)):
+      names = ", ".join(l.save for l in stage.layers if units[l.save].texture == tid)
+      fmt = "rgba32uint" if tid in packed else "rgba16float"
+      emit(f"@group(0) @binding({binding + o}) var out_{o}: texture_storage_2d<{fmt}, write>; // {names}")
 
   kernel = stage.layers[0].kernel
   halo = 1 if kernel == 3 else 0
@@ -243,16 +301,31 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
           emit(f"  let {var(i, dx, dy)} = T4(s{i}_{n});")
 
   # Загрузки: каждая текстура в каждой точке окрестности — один раз на стадию.
-  for i in range(len(stage.inputs) if not shuffled else 0):
+  # Упакованная (rgba32uint) читается одним textureLoad на оба слоя;
+  # unpack_half() объявляет helpers/CNN под точность (f32 или f16).
+  for u, tid in enumerate(ins if packed and not shuffled else []):
+    if tid not in packed:
+      continue
     for ly in ys:
       for lx in xs:
-        if tiled:
+        coord = "p0" if (lx, ly) == (0, 0) else f"p0 + vec2i({lx}, {ly})"
+        emit(f"  let u{u}_{lx + halo}_{ly + halo} = textureLoad(tex_{u}, clamp({coord}, vec2i(0), last), 0);")
+  for i in range(len(stage.inputs) if not shuffled else 0):
+    unit = units[stage.inputs[i]]
+    u = ins.index(unit.texture)
+    for ly in ys:
+      for lx in xs:
+        if unit.texture in packed:
+          a, b = ("x", "y") if unit.half == 0 else ("z", "w")
+          v = f"u{u}_{lx + halo}_{ly + halo}"
+          emit(f"  let {var(i, lx, ly)} = unpack_half({v}.{a}, {v}.{b});")
+        elif tiled:
           delta = ly * tw + lx
           index = "c" if delta == 0 else (f"c + {delta}u" if delta > 0 else f"c - {-delta}u")
           emit(f"  let {var(i, lx, ly)} = tile_{i}[{index}];")
         else:
           coord = "p0" if (lx, ly) == (0, 0) else f"p0 + vec2i({lx}, {ly})"
-          emit(f"  let {var(i, lx, ly)} = T4(textureLoad(tex_{i}, clamp({coord}, vec2i(0), last), 0));")
+          emit(f"  let {var(i, lx, ly)} = T4(textureLoad(tex_{u}, clamp({coord}, vec2i(0), last), 0));")
 
   # Вся арифметика — в T4/M4/A4: f32 или f16 целиком. Смешанный вариант
   # (произведения f16, суммы f32) на M1 Pro вдвое медленнее f32 из-за
@@ -287,8 +360,15 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
     emit(f"  let q{k} = p0 + vec2i({kx}, {ky});")
     emit(f"  if (all(q{k} < dim)) {{")
     if not stage.final:
-      for j in range(len(stage.layers)):
-        emit(f"    textureStore(out_{j}, q{k}, {res}{j}_{k});")
+      outs = output_units(stage, units)
+      for o, tid in enumerate(outs):
+        js = [j for j, l in enumerate(stage.layers) if units[l.save].texture == tid]
+        if tid in packed:
+          a, b = (f"{res}{j}_{k}" for j in js)
+          emit(f"    textureStore(out_{o}, q{k}, vec4u(pack2x16float({a}.xy), pack2x16float({a}.zw),"
+               f" pack2x16float({b}.xy), pack2x16float({b}.zw)));")
+        else:
+          emit(f"    textureStore(out_{o}, q{k}, {res}{js[0]}_{k});")
     elif d2s:
       # Depth-to-Space: канал (sy*2+sx) → пиксель выхода (2q + (sx, sy)),
       # плюс билинейный исходник (Overlay).
@@ -323,18 +403,14 @@ def main() -> None:
   for name in os.listdir(shader_dir):
     os.remove(os.path.join(shader_dir, name))
 
-  # Текстуры: 0 — вход (MAIN), дальше выходы стадий по порядку.
-  ids = {"MAIN": 0}
+  units, packed = assign_units(stages)
+  textures = 1 + max(u.texture for u in units.values())
   graph = []
   for n, stage in enumerate(stages):
     with open(os.path.join(shader_dir, f"stage{n}.wgsl"), "w", encoding="utf-8") as f:
-      f.write(wgsl_stage(stage, d2s, scale))
-    outputs = []
-    if not stage.final:
-      for layer in stage.layers:
-        ids[layer.save] = len(ids)
-        outputs.append(ids[layer.save])
-    graph.append((n, [ids[t] for t in stage.inputs], outputs, stage.final,
+      f.write(wgsl_stage(stage, d2s, scale, units, packed))
+    outputs = [] if stage.final else output_units(stage, units)
+    graph.append((n, input_units(stage, units), outputs, stage.final,
                   SUBGROUPS and stage.layers[0].kernel == 3 and not TILE and BX == 1 and BY == 1))
 
   # Пути считаются от корня репозитория: запускать из него.
@@ -357,8 +433,8 @@ import {{ CNNModel }} from '{rel_helpers}/model';
 const model: CNNModel = {{
   scale: {scale},
   block: [{BX}, {BY}],
-  textures: {len(ids)},
-  stages: [
+  textures: {textures},
+{f"  packed: [{', '.join(map(str, packed))}],{chr(10)}" if packed else ""}  stages: [
 {stage_lines}
   ],
 }};
@@ -373,10 +449,10 @@ import model from './model';
 
 export class {class_name} extends CNN {{
   constructor({{
-    device, inputTexture, precision, deRing,
+    device, inputTexture, precision, deRing, gate,
   }}: CNNModelPipelineDescriptor) {{
     super({{
-      device, inputTexture, model, name: '{class_name}', precision, deRing,
+      device, inputTexture, model, name: '{class_name}', precision, deRing, gate,
     }});
   }}
 }}

@@ -1,3 +1,5 @@
+import type { FrameGate } from './helpers/FrameGate';
+
 export interface Anime4KPipeline {
   /**
    * Update the controllable parameter managed by the pipeline
@@ -66,6 +68,8 @@ export interface DownscalePipelineDescriptor {
   filter?: 'catmull-rom' | 'bilinear';
   /** Статистика ClampStats: зажим ореолов прямо в последнем проходе. */
   deRing?: GPUTexture;
+  /** Ворота повторов: проходы запускаются косвенно и на повторе пропускаются. */
+  gate?: FrameGate;
   name?: string;
 }
 
@@ -94,6 +98,8 @@ export interface CNNModelPipelineDescriptor extends Anime4KPipelineDescriptor {
   precision?: CNNPrecision;
   /** Статистика ClampStats: зажим ореолов прямо в финальной стадии модели. */
   deRing?: GPUTexture;
+  /** Ворота повторов: стадии запускаются косвенно и на повторе пропускаются. */
+  gate?: FrameGate;
 }
 
 export interface Anime4KPresetPipelineDescriptor extends Anime4KPipelineDescriptor {
@@ -109,6 +115,16 @@ export interface ModeCPresetPipelineDescriptor extends Anime4KPresetPipelineDesc
   denoiseModel?: DenoiseModelSize;
   /** Точность CNN-звеньев, по умолчанию f32. */
   precision?: CNNPrecision;
+  /**
+   * Не пересчитывать повторяющиеся кадры (FrameGate): на повторе цепочка не
+   * запускается, выход остаётся прошлым. По умолчанию выключено.
+   */
+  skipUnchanged?: boolean;
+  /**
+   * Порог повтора в уровнях 8 бит, по умолчанию 0 — только точные повторы,
+   * выход тот же, что без пропуска.
+   */
+  unchangedThreshold?: number;
 }
 
 export interface ModeArtCNNPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
