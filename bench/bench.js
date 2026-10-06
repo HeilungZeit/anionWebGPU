@@ -355,6 +355,26 @@ async function measure(device, hasTimestamps, lib, preset, iterations) {
   return { wall, perStage, gpu };
 }
 
+/**
+ * Сборка пресета до первого готового кадра: сколько заняло и самая долгая
+ * заморозка основного потока за это время (по пропускам 4-мс таймера). Звенья
+ * форка компилируют шейдеры в фоне (ready), 1.0.0 — синхронно.
+ */
+async function build(lib, mode, device, input, src, dst, extra) {
+  let maxGap = 0; let last = performance.now();
+  const timer = setInterval(() => {
+    const now = performance.now(); maxGap = Math.max(maxGap, now - last); last = now;
+  }, 4);
+  const start = performance.now();
+  const preset = buildPreset(lib, mode, device, input, src, dst, extra);
+  await preset.ready;
+  const enc = device.createCommandEncoder(); preset.pass(enc); device.queue.submit([enc.finish()]);
+  await device.queue.onSubmittedWorkDone();
+  await new Promise((r) => { setTimeout(r, 20); });
+  clearInterval(timer);
+  return { preset, buildMs: performance.now() - start - 20, maxGap: Math.max(maxGap, performance.now() - last) };
+}
+
 function fmt(ms) { return ms === undefined ? '—' : ms.toFixed(2); }
 
 async function run() {
@@ -385,13 +405,17 @@ async function run() {
         log(`▶ ${label}`);
 
         // Эталон всегда VL; при M/L сверка показывает разницу моделей, а не ошибку.
-        const cand = buildPreset(candidateLib, mode, device, input, sc.src, sc.dst, { denoiseModel, precision, model: artModel });
+        const built = await build(candidateLib, mode, device, input, sc.src, sc.dst, { denoiseModel, precision, model: artModel });
+        const cand = built.preset;
+        log(`  сборка кандидата: ${fmt(built.buildMs)} мс, самая долгая заморозка страницы ${fmt(built.maxGap)} мс`);
         const candRes = await measure(device, hasTimestamps, candidateLib, cand, iterations);
         let baseRes = null; let verdict = null;
 
         // Режима может не быть у эталона (ArtCNN — только в форке).
         if (withBaseline && baselineLib[mode]) {
-          const base = buildPreset(baselineLib, mode, device, input, sc.src, sc.dst);
+          const builtBase = await build(baselineLib, mode, device, input, sc.src, sc.dst, {});
+          const base = builtBase.preset;
+          log(`  сборка эталона: ${fmt(builtBase.buildMs)} мс, самая долгая заморозка страницы ${fmt(builtBase.maxGap)} мс`);
           baseRes = await measure(device, hasTimestamps, baselineLib, base, iterations);
           const [a, b] = await Promise.all([
             readTexture(device, cand.getOutputTexture()),

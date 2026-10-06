@@ -18,6 +18,19 @@ export interface Anime4KPipeline {
    * get the output texture of this pipeline
    */
   getOutputTexture(): GPUTexture;
+
+  /**
+   * Шейдеры скомпилированы. Звенья форка собирают пайплайны через
+   * createComputePipelineAsync — компиляция идёт в фоне и не замораживает
+   * страницу; до готовности pass() бросает ошибку. Звенья без поля готовы
+   * сразу (синхронная сборка).
+   */
+  ready?: Promise<void>;
+}
+
+/** Готовность цепочки: все звенья, у которых есть ready. */
+export function whenReady(pipelines: Anime4KPipeline[]): Promise<void> {
+  return Promise.all(pipelines.map((pipeline) => pipeline.ready)).then(() => undefined);
 }
 
 export interface OriginalPipelineDescriptor {

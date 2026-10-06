@@ -24,7 +24,8 @@ const PRELUDE = {
 };
 
 interface CompiledStage {
-  pipeline: GPUComputePipeline;
+  /** Появляется, когда createComputePipelineAsync завершится. */
+  pipeline?: GPUComputePipeline;
   bindGroup: GPUBindGroup;
   /** Группа 1 финальной стадии — статистика для deRing(). */
   deRing?: GPUBindGroup;
@@ -40,6 +41,8 @@ export class CNN implements Anime4KPipeline {
   precision: CNNPrecision;
 
   stages: CompiledStage[] = [];
+
+  ready: Promise<void>;
 
   outputTexture: GPUTexture;
 
@@ -79,6 +82,7 @@ export class CNN implements Anime4KPipeline {
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
     const epilogue = new DeRingEpilogue(device, deRing);
 
+    const compiling: Promise<void>[] = [];
     model.stages.forEach((stage, n) => {
       const layoutEntries: GPUBindGroupLayoutEntry[] = [];
       const entries: GPUBindGroupEntry[] = [];
@@ -110,27 +114,33 @@ export class CNN implements Anime4KPipeline {
 
       const layout = device.createBindGroupLayout({ label: `${name}: stage ${n} layout`, entries: layoutEntries });
       const final = Boolean(stage.final);
-      this.stages.push({
-        pipeline: device.createComputePipeline({
-          label: `${name}: stage ${n}`,
-          layout: device.createPipelineLayout({
-            bindGroupLayouts: final ? [layout, epilogue.layout] : [layout],
-          }),
-          compute: {
-            module: device.createShaderModule({
-              label: `${name}: stage ${n}`,
-              // enable-директивы — до любых объявлений, поэтому subgroups первым.
-              code: (stage.subgroups ? 'enable subgroups;\n' : '')
-                + PRELUDE[this.precision] + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
-            }),
-            entryPoint: 'computeMain',
-            constants: final ? epilogue.constants : {},
-          },
-        }),
+      const compiled: CompiledStage = {
         bindGroup: device.createBindGroup({ label: `${name}: stage ${n}`, layout, entries }),
         deRing: final ? epilogue.bindGroup : undefined,
-      });
+      };
+      this.stages.push(compiled);
+      // Компиляция — в фоне: синхронный createComputePipeline занимал
+      // GPU-процесс браузера на секунды, и вся страница замирала.
+      compiling.push(device.createComputePipelineAsync({
+        label: `${name}: stage ${n}`,
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: final ? [layout, epilogue.layout] : [layout],
+        }),
+        compute: {
+          module: device.createShaderModule({
+            label: `${name}: stage ${n}`,
+            // enable-директивы — до любых объявлений, поэтому subgroups первым.
+            code: (stage.subgroups ? 'enable subgroups;\n' : '')
+              + PRELUDE[this.precision] + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
+          }),
+          entryPoint: 'computeMain',
+          constants: final ? epilogue.constants : {},
+        },
+      }).then((pipeline) => {
+        compiled.pipeline = pipeline;
+      }));
     });
+    this.ready = Promise.all(compiling).then(() => undefined);
   }
 
   updateParam(param: string, value: any): void {
@@ -142,6 +152,9 @@ export class CNN implements Anime4KPipeline {
     // синхронизации, запись стадии видна следующей.
     const pass = encoder.beginComputePass({ label: this.name });
     this.stages.forEach((stage) => {
+      if (!stage.pipeline) {
+        throw new Error(`${this.name}: шейдеры ещё компилируются — дождитесь ready.`);
+      }
       pass.setPipeline(stage.pipeline);
       pass.setBindGroup(0, stage.bindGroup);
       if (stage.deRing) pass.setBindGroup(1, stage.deRing);

@@ -1,5 +1,5 @@
 import { ClampStats, Downscale } from '../../helpers';
-import { Anime4KPipeline, ModeCPresetPipelineDescriptor } from '../../interfaces';
+import { Anime4KPipeline, ModeCPresetPipelineDescriptor, whenReady } from '../../interfaces';
 import {
   CNNx2M, DenoiseCNNx2L, DenoiseCNNx2M, DenoiseCNNx2VL,
 } from '../../upscale';
@@ -9,6 +9,9 @@ export class ModeC implements Anime4KPipeline {
   pipelines: Anime4KPipeline[];
 
   outputTexture: GPUTexture;
+
+  /** Все шейдеры цепочки скомпилированы (в фоне); до этого pass() не вызывать. */
+  ready: Promise<void>;
 
   /**
    * Constructs a new instance of the preset class.
@@ -37,6 +40,7 @@ export class ModeC implements Anime4KPipeline {
     // Без увеличения цепочка пуста: зажим по статистике того же кадра — тождество.
     if (!chain.upscale1) {
       this.outputTexture = currentTexture;
+      this.ready = Promise.resolve();
       return;
     }
 
@@ -88,6 +92,7 @@ export class ModeC implements Anime4KPipeline {
     }
 
     this.outputTexture = currentTexture;
+    this.ready = whenReady(this.pipelines);
   }
 
   updateParam(param: string, value: any): void {

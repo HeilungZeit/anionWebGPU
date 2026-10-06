@@ -18,11 +18,13 @@ export interface ClampStatsPipelineDescriptor {
 export class ClampStats implements Anime4KPipeline {
   name: string;
 
-  pipeline: GPUComputePipeline;
+  pipeline?: GPUComputePipeline;
 
   bindGroup: GPUBindGroup;
 
   outputTexture: GPUTexture;
+
+  ready: Promise<void>;
 
   constructor({ device, inputTexture, name = 'clamp stats' }: ClampStatsPipelineDescriptor) {
     this.name = name;
@@ -32,17 +34,30 @@ export class ClampStats implements Anime4KPipeline {
       format: 'r32float',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     });
-    this.pipeline = device.createComputePipeline({
+    const layout = device.createBindGroupLayout({
+      label: `${name} layout`,
+      entries: [
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: {} },
+        {
+          binding: 1,
+          visibility: GPUShaderStage.COMPUTE,
+          storageTexture: { access: 'write-only', format: 'r32float' },
+        },
+      ],
+    });
+    this.ready = device.createComputePipelineAsync({
       label: `${name} pipeline`,
-      layout: 'auto',
+      layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
       compute: {
         module: device.createShaderModule({ label: `${name}: module`, code: statsWGSL }),
         entryPoint: 'computeMain',
       },
+    }).then((pipeline) => {
+      this.pipeline = pipeline;
     });
     this.bindGroup = device.createBindGroup({
       label: `${name} bind group`,
-      layout: this.pipeline.getBindGroupLayout(0),
+      layout,
       entries: [
         { binding: 0, resource: inputTexture.createView() },
         { binding: 1, resource: this.outputTexture.createView() },
@@ -55,6 +70,9 @@ export class ClampStats implements Anime4KPipeline {
   }
 
   pass(encoder: GPUCommandEncoder): void {
+    if (!this.pipeline) {
+      throw new Error(`${this.name}: шейдер ещё компилируется — дождитесь ready.`);
+    }
     const pass = encoder.beginComputePass({ label: this.name });
     pass.setPipeline(this.pipeline);
     pass.setBindGroup(0, this.bindGroup);

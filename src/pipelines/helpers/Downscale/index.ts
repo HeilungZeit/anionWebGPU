@@ -11,7 +11,9 @@ import { DeRingEpilogue } from '../ClampHighlights/stats';
 export class Downscale implements Anime4KPipeline {
   outputTexture: GPUTexture;
 
-  steps: { pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, output: GPUTexture }[];
+  steps: { pipeline?: GPUComputePipeline, bindGroup: GPUBindGroup, output: GPUTexture }[];
+
+  ready: Promise<void>;
 
   /** Группа 1: статистика для deRing() или заглушка. */
   deRing: GPUBindGroup;
@@ -55,13 +57,27 @@ export class Downscale implements Anime4KPipeline {
     });
     const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [layout, epilogue.layout] });
     // Зажим (deRing) — только в последнем проходе, в разрешении выхода.
+    const compiling: Promise<void>[] = [];
     const step = (
       constants: Record<string, number>,
       input: GPUTexture,
       output: GPUTexture,
       last: boolean,
-    ) => ({
-      pipeline: device.createComputePipeline({
+    ) => {
+      const built: Downscale['steps'][number] = {
+        bindGroup: device.createBindGroup({
+          label: `${name} bind group`,
+          layout,
+          entries: [
+            { binding: 0, resource: input.createView() },
+            { binding: 1, resource: sampler },
+            { binding: 2, resource: output.createView() },
+          ],
+        }),
+        output,
+      };
+      // Компиляция в фоне — см. ready.
+      compiling.push(device.createComputePipelineAsync({
         label: `${name} pipeline`,
         layout: pipelineLayout,
         compute: {
@@ -69,18 +85,11 @@ export class Downscale implements Anime4KPipeline {
           entryPoint: 'computeMain',
           constants: { ...constants, DERING: last ? epilogue.constants.DERING : 0 },
         },
-      }),
-      bindGroup: device.createBindGroup({
-        label: `${name} bind group`,
-        layout,
-        entries: [
-          { binding: 0, resource: input.createView() },
-          { binding: 1, resource: sampler },
-          { binding: 2, resource: output.createView() },
-        ],
-      }),
-      output,
-    });
+      }).then((pipeline) => {
+        built.pipeline = pipeline;
+      }));
+      return built;
+    };
     this.deRing = epilogue.bindGroup;
 
     if (filter === 'bilinear') {
@@ -98,6 +107,7 @@ export class Downscale implements Anime4KPipeline {
         step({ FILTER: 1, AXIS: 1 }, middle, this.outputTexture, true),
       ];
     }
+    this.ready = Promise.all(compiling).then(() => undefined);
   }
 
   updateParam(param: string, value: any): void {
@@ -107,6 +117,9 @@ export class Downscale implements Anime4KPipeline {
   pass(encoder: GPUCommandEncoder): void {
     const pass = encoder.beginComputePass({ label: this.name });
     this.steps.forEach(({ pipeline, bindGroup, output }) => {
+      if (!pipeline) {
+        throw new Error(`${this.name}: шейдеры ещё компилируются — дождитесь ready.`);
+      }
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
       pass.setBindGroup(1, this.deRing);
