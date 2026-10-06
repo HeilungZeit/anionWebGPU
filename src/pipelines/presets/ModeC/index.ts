@@ -1,7 +1,8 @@
 import { ClampHighlights, Downscale } from '../../helpers';
-import { Anime4KPipeline, Anime4KPresetPipelineDescriptor } from '../../interfaces';
-import { CNNVL } from '../../restore';
-import { CNNx2M, CNNx2VL, DenoiseCNNx2VL } from '../../upscale';
+import { Anime4KPipeline, ModeCPresetPipelineDescriptor } from '../../interfaces';
+import {
+  CNNx2M, DenoiseCNNx2L, DenoiseCNNx2M, DenoiseCNNx2VL,
+} from '../../upscale';
 
 export class ModeC implements Anime4KPipeline {
   pipelines: Anime4KPipeline[];
@@ -17,32 +18,30 @@ export class ModeC implements Anime4KPipeline {
    * @param {GPUTexture} options.inputTexture - The input texture to process.
    * @param {Dimensions} options.nativeDimensions - The original dimensions of the input texture.
    * @param {Dimensions} options.targetDimensions - The target dimension for the output texture.
+   * @param {DenoiseModelSize} [options.denoiseModel='VL'] - Size of the Upscale-Denoise model.
+   * @param {CNNPrecision} [options.precision='f32'] - Arithmetic precision of the CNN stages.
    */
   constructor({
     device,
     inputTexture,
     nativeDimensions,
     targetDimensions,
-  }: Anime4KPresetPipelineDescriptor) {
+    denoiseModel = 'VL',
+    precision = 'f32',
+  }: ModeCPresetPipelineDescriptor) {
     let curWidth = nativeDimensions.width;
     let curHeight = nativeDimensions.height;
     this.pipelines = [];
     let currentTexture = inputTexture; // track most recent texture
 
-    // Clamp Highlights
-    const clampHighlights = new ClampHighlights({
-      device,
-      inputTexture: currentTexture,
-    });
-    this.pipelines.push(clampHighlights);
-    currentTexture = clampHighlights.getOutputTexture();
-
     // Upscale 1
     if (targetDimensions.width > 1.2 * curWidth
         && targetDimensions.height > 1.2 * curHeight) {
-      const upscale1 = new DenoiseCNNx2VL({
+      const Denoise = { M: DenoiseCNNx2M, L: DenoiseCNNx2L, VL: DenoiseCNNx2VL }[denoiseModel];
+      const upscale1 = new Denoise({
         device,
         inputTexture: currentTexture,
+        precision,
       });
       this.pipelines.push(upscale1);
       currentTexture = upscale1.getOutputTexture();
@@ -91,12 +90,23 @@ export class ModeC implements Anime4KPipeline {
       const upscale2 = new CNNx2M({
         device,
         inputTexture: currentTexture,
+        precision,
       });
       this.pipelines.push(upscale2);
       currentTexture = upscale2.getOutputTexture();
       curWidth *= 2;
       curHeight *= 2;
     }
+
+    // Clamp Highlights — последним, как HOOK PREKERNEL в mpv: статистика по
+    // исходнику, зажим в разрешении выхода.
+    const clampHighlights = new ClampHighlights({
+      device,
+      inputTexture: currentTexture,
+      statsTexture: inputTexture,
+    });
+    this.pipelines.push(clampHighlights);
+    currentTexture = clampHighlights.getOutputTexture();
 
     this.outputTexture = currentTexture;
   }

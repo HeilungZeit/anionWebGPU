@@ -1,33 +1,47 @@
 import { Anime4KPipeline, ClampHighlightsPipelineDescriptor } from '../../interfaces';
-import luminationXWGSL from './shaders/luminationX.wgsl';
-import luminationYWGSL from './shaders/luminationY.wgsl';
+import statsWGSL from './shaders/stats.wgsl';
 import clampWGSL from './shaders/clamp.wgsl';
 
+/**
+ * Anime4K Clamp Highlights (de-ring).
+ *
+ * Статистика (максимум яркости 5×5) снимается с исходника `statsTexture`, а
+ * зажим применяется к `inputTexture` — результату всей цепочки, в его
+ * разрешении. Поэтому звено ставится последним. В 1.0.0 оба шага шли по одному
+ * кадру в начале цепочки, и зажим ничего не делал: окно включает сам пиксель.
+ */
 export class ClampHighlights implements Anime4KPipeline {
   name: string;
 
   pipelines: {
-    luminationXPipeline: GPUComputePipeline,
-    luminationYPipeline: GPUComputePipeline,
+    statsPipeline: GPUComputePipeline,
     clampPipeline: GPUComputePipeline,
   };
 
   bindGroups: {
-    luminationXBindGroup: GPUBindGroup,
-    luminationYBindGroup: GPUBindGroup,
+    statsBindGroup: GPUBindGroup,
     clampBindGroup: GPUBindGroup,
   };
+
+  statsTexture: GPUTexture;
 
   outputTexture: GPUTexture;
 
   constructor({
     device,
     inputTexture,
+    statsTexture,
     name = 'clamp highlights',
   }: ClampHighlightsPipelineDescriptor) {
     this.name = name;
 
-    // textures
+    this.statsTexture = device.createTexture({
+      label: `${name}: statsmax_texture`,
+      size: [statsTexture.width, statsTexture.height, 1],
+      format: 'r32float',
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+    });
+
     this.outputTexture = device.createTexture({
       label: `${name}: clamp_highlights_texture`,
       size: [inputTexture.width, inputTexture.height, 1],
@@ -35,36 +49,14 @@ export class ClampHighlights implements Anime4KPipeline {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     });
 
-    const statsXTexture = device.createTexture({
-      label: `${name}: statsmax_texture`,
-      size: [inputTexture.width, inputTexture.height, 1],
-      format: 'rgba16float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
-    });
-
-    const statsYTexture = device.createTexture({
-      label: `${name}: statsmax_texture`,
-      size: [inputTexture.width, inputTexture.height, 1],
-      format: 'rgba16float',
-      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
-    });
-
-    // bindGroupLayouts
-    const luminationBindGroupLayout = device.createBindGroupLayout({
-      label: `${name} lumination bind group layout`,
+    const statsBindGroupLayout = device.createBindGroupLayout({
+      label: `${name} stats bind group layout`,
       entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: {},
-        },
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: {} },
         {
           binding: 1,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: {
-            access: 'write-only',
-            format: 'rgba16float',
-          },
+          storageTexture: { access: 'write-only', format: 'r32float' },
         },
       ],
     });
@@ -72,140 +64,54 @@ export class ClampHighlights implements Anime4KPipeline {
     const clampBindGroupLayout = device.createBindGroupLayout({
       label: `${name} clamp bind group layout`,
       entries: [
-        {
-          binding: 0,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: {},
-        },
-        {
-          binding: 1,
-          visibility: GPUShaderStage.COMPUTE,
-          texture: {},
-        },
+        { binding: 0, visibility: GPUShaderStage.COMPUTE, texture: {} },
+        { binding: 1, visibility: GPUShaderStage.COMPUTE, texture: { sampleType: 'unfilterable-float' } },
         {
           binding: 2,
           visibility: GPUShaderStage.COMPUTE,
-          storageTexture: {
-            access: 'write-only',
-            format: 'rgba16float',
-          },
+          storageTexture: { access: 'write-only', format: 'rgba16float' },
         },
       ],
     });
 
-    // modules
-    const luminationXModule = device.createShaderModule({
-      label: `${name}: luminationX Module`,
-      code: luminationXWGSL,
-    });
-
-    const luminationYModule = device.createShaderModule({
-      label: `${name}: luminationY Module`,
-      code: luminationYWGSL,
-    });
-
-    const clampModule = device.createShaderModule({
-      label: `${name}: clamp Module`,
-      code: clampWGSL,
-    });
-
-    // pipeline layouts
-    const luminationPipelineLayout = device.createPipelineLayout({
-      label: `${name} lumination pipeline layout`,
-      bindGroupLayouts: [luminationBindGroupLayout],
-    });
-
-    const clampPipelineLayout = device.createPipelineLayout({
-      label: `${name} clamp pipeline layout`,
-      bindGroupLayouts: [clampBindGroupLayout],
-    });
-
-    const luminationXPipeline = device.createComputePipeline({
-      label: `${name} luminationX pipeline`,
-      layout: luminationPipelineLayout,
+    const statsPipeline = device.createComputePipeline({
+      label: `${name} stats pipeline`,
+      layout: device.createPipelineLayout({ bindGroupLayouts: [statsBindGroupLayout] }),
       compute: {
-        module: luminationXModule,
-        entryPoint: 'computeMain',
-      },
-    });
-
-    const luminationYPipeline = device.createComputePipeline({
-      label: `${name} luminationY pipeline`,
-      layout: luminationPipelineLayout,
-      compute: {
-        module: luminationYModule,
+        module: device.createShaderModule({ label: `${name}: stats module`, code: statsWGSL }),
         entryPoint: 'computeMain',
       },
     });
 
     const clampPipeline = device.createComputePipeline({
       label: `${name} clamp pipeline`,
-      layout: clampPipelineLayout,
+      layout: device.createPipelineLayout({ bindGroupLayouts: [clampBindGroupLayout] }),
       compute: {
-        module: clampModule,
+        module: device.createShaderModule({ label: `${name}: clamp module`, code: clampWGSL }),
         entryPoint: 'computeMain',
       },
     });
 
-    this.pipelines = {
-      luminationXPipeline,
-      luminationYPipeline,
-      clampPipeline,
-    };
-
-    const luminationXBindGroup = device.createBindGroup({
-      label: `${name} luminationX bind group`,
-      layout: luminationBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: inputTexture.createView(),
-        },
-        {
-          binding: 1,
-          resource: statsXTexture.createView(),
-        },
-      ],
-    });
-
-    const luminationYBindGroup = device.createBindGroup({
-      label: `${name} luminationY bind group`,
-      layout: luminationBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: statsXTexture.createView(),
-        },
-        {
-          binding: 1,
-          resource: statsYTexture.createView(),
-        },
-      ],
-    });
-
-    const clampBindGroup = device.createBindGroup({
-      label: `${name} clamp bind group`,
-      layout: clampBindGroupLayout,
-      entries: [
-        {
-          binding: 0,
-          resource: inputTexture.createView(),
-        },
-        {
-          binding: 1,
-          resource: statsYTexture.createView(),
-        },
-        {
-          binding: 2,
-          resource: this.outputTexture.createView(),
-        },
-      ],
-    });
+    this.pipelines = { statsPipeline, clampPipeline };
 
     this.bindGroups = {
-      luminationXBindGroup,
-      luminationYBindGroup,
-      clampBindGroup,
+      statsBindGroup: device.createBindGroup({
+        label: `${name} stats bind group`,
+        layout: statsBindGroupLayout,
+        entries: [
+          { binding: 0, resource: statsTexture.createView() },
+          { binding: 1, resource: this.statsTexture.createView() },
+        ],
+      }),
+      clampBindGroup: device.createBindGroup({
+        label: `${name} clamp bind group`,
+        layout: clampBindGroupLayout,
+        entries: [
+          { binding: 0, resource: inputTexture.createView() },
+          { binding: 1, resource: this.statsTexture.createView() },
+          { binding: 2, resource: this.outputTexture.createView() },
+        ],
+      }),
     };
   }
 
@@ -214,23 +120,14 @@ export class ClampHighlights implements Anime4KPipeline {
   }
 
   pass(encoder: GPUCommandEncoder): void {
-    const luminationXPass = encoder.beginComputePass();
-    luminationXPass.setPipeline(this.pipelines.luminationXPipeline);
-    luminationXPass.setBindGroup(0, this.bindGroups.luminationXBindGroup);
-    luminationXPass.dispatchWorkgroups(
-      Math.ceil(this.outputTexture.width / 8),
-      Math.ceil(this.outputTexture.height / 8),
+    const statsPass = encoder.beginComputePass();
+    statsPass.setPipeline(this.pipelines.statsPipeline);
+    statsPass.setBindGroup(0, this.bindGroups.statsBindGroup);
+    statsPass.dispatchWorkgroups(
+      Math.ceil(this.statsTexture.width / 8),
+      Math.ceil(this.statsTexture.height / 8),
     );
-    luminationXPass.end();
-
-    const luminationYPass = encoder.beginComputePass();
-    luminationYPass.setPipeline(this.pipelines.luminationYPipeline);
-    luminationYPass.setBindGroup(0, this.bindGroups.luminationYBindGroup);
-    luminationYPass.dispatchWorkgroups(
-      Math.ceil(this.outputTexture.width / 8),
-      Math.ceil(this.outputTexture.height / 8),
-    );
-    luminationYPass.end();
+    statsPass.end();
 
     const clampPass = encoder.beginComputePass();
     clampPass.setPipeline(this.pipelines.clampPipeline);

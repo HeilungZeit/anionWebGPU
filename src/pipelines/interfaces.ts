@@ -49,12 +49,17 @@ export interface DownscalePipelineDescriptor {
   device: GPUDevice;
   inputTexture: GPUTexture;
   targetDimensions: { width: number; height: number };
+  /** По умолчанию 'catmull-rom' (без алиасинга); 'bilinear' — как в mpv. */
+  filter?: 'catmull-rom' | 'bilinear';
   name?: string;
 }
 
 export interface ClampHighlightsPipelineDescriptor {
   device: GPUDevice;
+  /** Результат цепочки — его и зажимаем, в его разрешении. */
   inputTexture: GPUTexture;
+  /** Исходный кадр: по нему считается максимум яркости 5×5. */
+  statsTexture: GPUTexture;
   name?: string;
 }
 
@@ -62,7 +67,35 @@ export interface Anime4KPipelineDescriptor extends OriginalPipelineDescriptor {
   device: GPUDevice;
 }
 
+/**
+ * Точность арифметики CNN-моделей. 'f16' требует устройства с фичей
+ * 'shader-f16'. По умолчанию f32: на Apple f16 не быстрее (та же скорость
+ * ALU), на GPU с двойной скоростью f16 (Intel, AMD) выигрыш нужно подтвердить
+ * замером. Точность f16 против f32: maxΔ 0.81/255, PSNR 70 дБ.
+ */
+export type CNNPrecision = 'f32' | 'f16';
+
+export interface CNNModelPipelineDescriptor extends Anime4KPipelineDescriptor {
+  precision?: CNNPrecision;
+}
+
 export interface Anime4KPresetPipelineDescriptor extends Anime4KPipelineDescriptor {
   nativeDimensions: { width: number; height: number };
   targetDimensions: { width: number; height: number };
+}
+
+/** Размер модели Upscale-Denoise: M ≈ в 4 раза дешевле VL, L — посередине. */
+export type DenoiseModelSize = 'M' | 'L' | 'VL';
+
+export interface ModeCPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
+  /** По умолчанию VL — как в Anime4K Mode C. */
+  denoiseModel?: DenoiseModelSize;
+  /** Точность CNN-звеньев, по умолчанию f32. */
+  precision?: CNNPrecision;
+}
+
+export interface ModeArtCNNPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
+  /** C4F16 (~12k параметров, по умолчанию) или C4F32 (~48k). */
+  model?: 'C4F16' | 'C4F32';
+  precision?: CNNPrecision;
 }

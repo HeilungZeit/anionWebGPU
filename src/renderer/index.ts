@@ -30,7 +30,7 @@ export async function render(options: RendererOptions): Promise<void> {
   const { video, canvas, pipelineBuilder } = options;
   if (video.readyState < video.HAVE_FUTURE_DATA) {
     await new Promise((resolve) => {
-      video.onloadeddata = resolve;
+      video.addEventListener('loadeddata', resolve, { once: true });
     });
   }
   const WIDTH = video.videoWidth;

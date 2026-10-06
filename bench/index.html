@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Anime4K bench</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #fff; --fg: #111; --muted: #666; --line: #ddd; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #111; --fg: #eee; --muted: #999; --line: #333; } }
+    body { margin: 0; padding: 16px; background: var(--bg); color: var(--fg); font: 14px/1.4 system-ui, sans-serif; }
+    fieldset { border: 1px solid var(--line); margin: 0 0 12px; }
+    label { margin-right: 12px; white-space: nowrap; }
+    table { border-collapse: collapse; margin: 12px 0; font-variant-numeric: tabular-nums; }
+    th, td { border: 1px solid var(--line); padding: 4px 8px; text-align: right; }
+    th:first-child, td:first-child { text-align: left; }
+    .muted { color: var(--muted); }
+    .ok { color: #2a8a2a; } .bad { color: #c33; }
+    .views { display: flex; flex-wrap: wrap; gap: 8px; }
+    .views figure { margin: 0; }
+    .views canvas { max-width: 100%; width: 480px; image-rendering: pixelated; border: 1px solid var(--line); }
+    pre { white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Anime4K bench</h1>
+  <p class="muted" id="gpu">GPU: …</p>
+
+  <fieldset>
+    <legend>Источник</legend>
+    <input type="file" id="file" accept="image/*,video/*">
+    <label>время видео, с <input type="number" id="seek" value="30" min="0" step="1" style="width:5em"></label>
+    <span class="muted">Без файла — синтетический кадр с JPEG-артефактами.</span>
+  </fieldset>
+
+  <fieldset>
+    <legend>Сценарии</legend>
+    <div id="scenarios"></div>
+    <div>
+      <label><input type="checkbox" name="mode" value="ModeC" checked> ModeC</label>
+      <label><input type="checkbox" name="mode" value="ModeCA" checked> ModeCA</label>
+      <label><input type="checkbox" name="mode" value="ModeArtCNN"> ArtCNN
+        <select id="artModel"><option>C4F16</option><option>C4F32</option></select></label>
+      <label>модель Denoise (кандидат)
+        <select id="denoiseModel"><option>VL</option><option>L</option><option>M</option></select></label>
+      <label><input type="checkbox" id="f16"> shader-f16</label>
+      <label>итераций <input type="number" id="iters" value="60" min="5" style="width:5em"></label>
+      <label><input type="checkbox" id="baseline" checked> сравнивать с эталоном</label>
+      <select id="reference">
+        <option value="1.0.0">1.0.0 (npm, как в anion)</option>
+        <option value="ref/e1">ref/e1 — после Э1 (края: нули)</option>
+        <option value="ref/e2">ref/e2 — после Э2 (края: clamp, как в mpv)</option>
+        <option value="ref/e5">ref/e5 — после Э5</option>
+        <option value="ref/e7">ref/e7 — после Э7 (Downscale Catmull-Rom)</option>
+      </select>
+      <label><input type="checkbox" id="ignoreEdge"> край 16px не в вердикте</label>
+    </div>
+  </fieldset>
+
+  <button id="run" disabled>Запустить</button>
+  <pre id="log"></pre>
+  <div id="results"></div>
+  <div class="views" id="views"></div>
+
+  <!-- Эталон 1.0.0 — UMD с глобалом; кандидат (форк) — ESM, грузится в bench.js. -->
+  <script src="./baseline/anime4k-webgpu-1.0.0.umd.js"></script>
+  <script>window.a4kBaseline = window['anime4k-webgpu']; delete window['anime4k-webgpu'];</script>
+  <script type="module" src="./bench.js"></script>
+</body>
+</html>

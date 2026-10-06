@@ -1,13 +1,15 @@
-import { Anime4KPipeline, Anime4KPipelineDescriptor, DownscalePipelineDescriptor } from '../../interfaces';
-import vertexWGSL from './shaders/vertex.wgsl';
-import fragmentWGSL from './shaders/fragment.wgsl';
+import { Anime4KPipeline, DownscalePipelineDescriptor } from '../../interfaces';
+import downscaleWGSL from './shaders/downscale.wgsl';
 
+/**
+ * Уменьшение до `targetDimensions`. По умолчанию — Catmull-Rom с ядром,
+ * растянутым на коэффициент уменьшения (без алиасинга); 'bilinear' — выборка
+ * в точке, как AutoDownscalePre в mpv и 1.0.0.
+ */
 export class Downscale implements Anime4KPipeline {
   outputTexture: GPUTexture;
 
-  pipeline: GPURenderPipeline;
-
-  bindGroup: GPUBindGroup;
+  steps: { pipeline: GPUComputePipeline, bindGroup: GPUBindGroup, output: GPUTexture }[];
 
   name: string;
 
@@ -15,90 +17,56 @@ export class Downscale implements Anime4KPipeline {
     device,
     inputTexture,
     targetDimensions,
+    filter = 'catmull-rom',
     name = 'downscale',
   }: DownscalePipelineDescriptor) {
     this.name = name;
 
-    // output texture
     this.outputTexture = device.createTexture({
       label: `${name} output texture`,
       size: [targetDimensions.width, targetDimensions.height, 1],
       format: 'rgba16float',
-      usage: GPUTextureUsage.TEXTURE_BINDING
-      | GPUTextureUsage.RENDER_ATTACHMENT
-      | GPUTextureUsage.STORAGE_BINDING,
+      usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     });
 
-    // modules
-    const vertexModule = device.createShaderModule({
-      label: 'vertex module',
-      code: vertexWGSL,
-    });
+    const module = device.createShaderModule({ label: `${name} module`, code: downscaleWGSL });
+    const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    const step = (constants: Record<string, number>, input: GPUTexture, output: GPUTexture) => {
+      const pipeline = device.createComputePipeline({
+        label: `${name} pipeline`,
+        layout: 'auto',
+        compute: { module, entryPoint: 'computeMain', constants },
+      });
+      return {
+        pipeline,
+        bindGroup: device.createBindGroup({
+          label: `${name} bind group`,
+          layout: pipeline.getBindGroupLayout(0),
+          entries: [
+            { binding: 0, resource: input.createView() },
+            { binding: 1, resource: sampler },
+            { binding: 2, resource: output.createView() },
+          ],
+        }),
+        output,
+      };
+    };
 
-    const fragmentModule = device.createShaderModule({
-      label: 'fragment module',
-      code: fragmentWGSL,
-    });
-
-    const renderBindGroupLayout = device.createBindGroupLayout({
-      label: 'Render Bind Group Layout',
-      entries: [
-        {
-          binding: 1,
-          visibility: GPUShaderStage.FRAGMENT,
-          sampler: {},
-        },
-        {
-          binding: 2,
-          visibility: GPUShaderStage.FRAGMENT,
-          texture: {},
-        },
-      ],
-    });
-
-    const renderPipelineLayout = device.createPipelineLayout({
-      label: `${name} pipeline layout`,
-      bindGroupLayouts: [renderBindGroupLayout],
-    });
-
-    this.pipeline = device.createRenderPipeline({
-      layout: renderPipelineLayout,
-      vertex: {
-        module: vertexModule,
-        entryPoint: 'vert_main',
-      },
-      fragment: {
-        module: fragmentModule,
-        entryPoint: 'main',
-        targets: [
-          {
-            format: 'rgba16float',
-          },
-        ],
-      },
-      primitive: {
-        topology: 'triangle-list',
-      },
-    });
-
-    const sampler = device.createSampler({
-      magFilter: 'linear',
-      minFilter: 'linear',
-    });
-
-    this.bindGroup = device.createBindGroup({
-      layout: renderBindGroupLayout,
-      entries: [
-        {
-          binding: 1,
-          resource: sampler,
-        },
-        {
-          binding: 2,
-          resource: inputTexture.createView(),
-        },
-      ],
-    });
+    if (filter === 'bilinear') {
+      this.steps = [step({ FILTER: 0 }, inputTexture, this.outputTexture)];
+    } else {
+      // Сепарабельно: x (ширина выхода × высота входа), затем y.
+      const middle = device.createTexture({
+        label: `${name} middle texture`,
+        size: [targetDimensions.width, inputTexture.height, 1],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+      });
+      this.steps = [
+        step({ FILTER: 1, AXIS: 0 }, inputTexture, middle),
+        step({ FILTER: 1, AXIS: 1 }, middle, this.outputTexture),
+      ];
+    }
   }
 
   updateParam(param: string, value: any): void {
@@ -106,21 +74,12 @@ export class Downscale implements Anime4KPipeline {
   }
 
   pass(encoder: GPUCommandEncoder): void {
-    const pass = encoder.beginRenderPass({
-      colorAttachments: [
-        {
-          view: this.outputTexture.createView(),
-          clearValue: {
-            r: 0.0, g: 0.0, b: 0.0, a: 1.0,
-          },
-          loadOp: 'clear' as GPULoadOp,
-          storeOp: 'store' as GPUStoreOp,
-        },
-      ],
+    const pass = encoder.beginComputePass({ label: this.name });
+    this.steps.forEach(({ pipeline, bindGroup, output }) => {
+      pass.setPipeline(pipeline);
+      pass.setBindGroup(0, bindGroup);
+      pass.dispatchWorkgroups(Math.ceil(output.width / 8), Math.ceil(output.height / 8));
     });
-    pass.setPipeline(this.pipeline);
-    pass.setBindGroup(0, this.bindGroup);
-    pass.draw(6);
     pass.end();
   }
 
