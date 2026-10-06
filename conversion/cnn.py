@@ -128,11 +128,26 @@ def plan(convs: list[Conv], d2s: DepthToSpace | None) -> list[Stage]:
   return stages
 
 
+# Параметры ядра (Э5), переопределяются окружением для замеров. По умолчанию —
+# то, что быстрее на Apple M1 Pro (журнал в PLAN.md): поток на пиксель, без
+# плитки. На M1 Pro блок 2×1 и больше — в 4–5 раз медленнее (регистры
+# вытесняются в память), плитка — на 17% медленнее.
+#   CNN_BX, CNN_BY — пикселей на поток по x/y (блокировка по регистрам:
+#                    каждый вес подгружается один раз на BX·BY пикселей);
+#   CNN_TILE=1     — плитка входа в shared memory для 3×3.
+WG = 8
+BX = int(os.environ.get("CNN_BX", "1"))
+BY = int(os.environ.get("CNN_BY", "1"))
+TILE = os.environ.get("CNN_TILE", "0") == "1"
+
+
+
 def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
   out = []
   emit = out.append
   emit(f"// {stage.layers[0].desc}")
   emit(f"// Слои: {', '.join(l.save for l in stage.layers)}. Сгенерировано conversion/cnn.py — не править.")
+  emit("// Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).")
   binding = 0
   for i, name in enumerate(stage.inputs):
     emit(f"@group(0) @binding({binding}) var tex_{i}: texture_2d<f32>; // {name}")
@@ -144,68 +159,108 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
   else:
     for j, layer in enumerate(stage.layers):
       emit(f"@group(0) @binding({binding + j}) var out_{j}: texture_storage_2d<rgba16float, write>; // {layer.save}")
-  emit("")
-  emit("@compute @workgroup_size(8, 8)")
-  emit("fn computeMain(@builtin(global_invocation_id) gid: vec3u) {")
-  emit("  let dim = textureDimensions(tex_0);")
-  emit("  if (gid.x >= dim.x || gid.y >= dim.y) {")
-  emit("    return;")
-  emit("  }")
-  emit("  let p = vec2i(gid.xy);")
 
-  # Загрузки: каждая текстура в каждом смещении — один раз на все слои стадии.
   kernel = stage.layers[0].kernel
-  offsets = [(dx, dy) for dx in (-1, 0, 1) for dy in (-1, 0, 1)] if kernel == 3 else [(0, 0)]
-  if kernel == 3:
-    emit("  let last = vec2i(dim) - 1;")
+  halo = 1 if kernel == 3 else 0
+  tiled = TILE and kernel == 3
+  pixels = [(kx, ky) for ky in range(BY) for kx in range(BX)]
+  # Окрестность блока в локальных координатах (от левого верхнего пикселя блока).
+  xs = range(-halo, BX + halo)
+  ys = range(-halo, BY + halo)
+  tw, th = WG * BX + 2, WG * BY + 2  # плитка группы с ореолом
 
-  def var(i: int, dx: int, dy: int) -> str:
-    def part(v):
-      return "m1" if v < 0 else ("p1" if v > 0 else "0")
-    return f"t{i}" if kernel == 1 else f"t{i}_{part(dx)}_{part(dy)}"
+  emit("")
+  if tiled:
+    for i in range(len(stage.inputs)):
+      emit(f"var<workgroup> tile_{i}: array<T4, {tw * th}>;")
+    emit("")
+  emit(f"@compute @workgroup_size({WG}, {WG})")
+  emit("fn computeMain(")
+  emit("  @builtin(global_invocation_id) gid: vec3u,")
+  emit("  @builtin(local_invocation_id) lid: vec3u,")
+  emit("  @builtin(workgroup_id) wid: vec3u,")
+  emit(") {")
+  emit("  let dim = vec2i(textureDimensions(tex_0));")
+  emit("  let last = dim - 1;")
+  emit(f"  let p0 = vec2i(gid.xy) * vec2i({BX}, {BY});")
 
+  def var(i: int, lx: int, ly: int) -> str:
+    return f"t{i}_{lx + halo}_{ly + halo}"
+
+  if tiled:
+    # Плитка входа в shared memory; края — clamp, как texOff в mpv.
+    emit(f"  let origin = vec2i(wid.xy) * vec2i({WG * BX}, {WG * BY}) - 1;")
+    emit(f"  for (var k = lid.y * {WG}u + lid.x; k < {tw * th}u; k += {WG * WG}u) {{")
+    emit(f"    let q = clamp(origin + vec2i(i32(k % {tw}u), i32(k / {tw}u)), vec2i(0), last);")
+    for i in range(len(stage.inputs)):
+      emit(f"    tile_{i}[k] = T4(textureLoad(tex_{i}, q, 0));")
+    emit("  }")
+    emit("  workgroupBarrier();")
+    emit(f"  let c = (lid.y * {BY}u + 1u) * {tw}u + lid.x * {BX}u + 1u;")
+
+  # Загрузки: каждая текстура в каждой точке окрестности — один раз на стадию.
   for i in range(len(stage.inputs)):
-    for dx, dy in offsets:
-      coord = "p" if (dx, dy) == (0, 0) else f"p + vec2i({dx}, {dy})"
-      if kernel == 3:
-        coord = f"clamp({coord}, vec2i(0), last)"  # как texOff в mpv (clamp to edge)
-      emit(f"  let {var(i, dx, dy)} = textureLoad(tex_{i}, {coord}, 0);")
+    for ly in ys:
+      for lx in xs:
+        if tiled:
+          delta = ly * tw + lx
+          index = "c" if delta == 0 else (f"c + {delta}u" if delta > 0 else f"c - {-delta}u")
+          emit(f"  let {var(i, lx, ly)} = tile_{i}[{index}];")
+        else:
+          coord = "p0" if (lx, ly) == (0, 0) else f"p0 + vec2i({lx}, {ly})"
+          emit(f"  let {var(i, lx, ly)} = T4(textureLoad(tex_{i}, clamp({coord}, vec2i(0), last), 0));")
 
+  # Вся арифметика — в T4/M4/A4: f32 или f16 целиком. Смешанный вариант
+  # (произведения f16, суммы f32) на M1 Pro вдвое медленнее f32 из-за
+  # приведений на каждом слагаемом, а точность f16 целиком достаточна:
+  # maxΔ 0.81/255, PSNR 70 дБ против f32.
   for j, layer in enumerate(stage.layers):
     emit(f"  // {layer.save}")
-    first = True
+    for k in range(len(pixels)):
+      emit(f"  var r{j}_{k} = A4(0.0);")
     for index, dx, dy, weights in layer.terms:
       src = layer.sources[index]
-      v = var(stage.inputs.index(src.texture), dx, dy)
-      if src.sign == "+":
-        v = f"max({v}, vec4f(0.0))"
-      elif src.sign == "-":
-        v = f"max(-{v}, vec4f(0.0))"
-      expr = f"mat4x4f({weights}) * {v}"
-      emit(f"  var r{j} = {expr};" if first else f"  r{j} += {expr};")
-      first = False
-    emit(f"  r{j} += vec4f({layer.bias});")
+      i = stage.inputs.index(src.texture)
+      emit("  {")
+      emit(f"    let w = M4({weights});")
+      for k, (kx, ky) in enumerate(pixels):
+        v = var(i, kx + dx, ky + dy)
+        if src.sign == "+":
+          v = f"max({v}, T4(0.0))"
+        elif src.sign == "-":
+          v = f"max(-{v}, T4(0.0))"
+        emit(f"    r{j}_{k} += A4(w * {v});")
+      emit("  }")
+    for k in range(len(pixels)):
+      emit(f"  r{j}_{k} += A4({layer.bias});")
+      emit(f"  let s{j}_{k} = vec4f(r{j}_{k});")
 
-  if not stage.final:
-    for j in range(len(stage.layers)):
-      emit(f"  textureStore(out_{j}, gid.xy, r{j});")
-  elif d2s:
-    # Depth-to-Space: канал (sy*2+sx) слоя → пиксель (2p + (sx, sy)).
-    layer_index = {l.save: j for j, l in enumerate(stage.layers)}
+  layer_index = {l.save: j for j, l in enumerate(stage.layers)}
+  res = "s"  # итог слоя в f32
+  if stage.final and d2s:
     emit("  let out_dim = vec2f(textureDimensions(tex_out));")
-    for sy in range(scale):
-      for sx in range(scale):
-        ch = sy * scale + sx
-        comps = ", ".join(f"r{layer_index[t]}[{ch}]" for t in d2s.channels)
-        emit(f"  {{")
-        emit(f"    let q = gid.xy * {scale}u + vec2u({sx}u, {sy}u);")
-        emit(f"    let uv = (vec2f(q) + 0.5) / out_dim;")
-        emit(f"    let base = textureSampleLevel(tex_main, main_sampler, uv, 0.0);")
-        emit(f"    textureStore(tex_out, q, clamp(base + vec4f({comps}), vec4f(0.0), vec4f(1.0)));")
-        emit(f"  }}")
-  else:
-    emit("  let base = textureLoad(tex_main, p, 0);")
-    emit("  textureStore(tex_out, gid.xy, clamp(base + r0, vec4f(0.0), vec4f(1.0)));")
+  for k, (kx, ky) in enumerate(pixels):
+    emit(f"  let q{k} = p0 + vec2i({kx}, {ky});")
+    emit(f"  if (all(q{k} < dim)) {{")
+    if not stage.final:
+      for j in range(len(stage.layers)):
+        emit(f"    textureStore(out_{j}, q{k}, {res}{j}_{k});")
+    elif d2s:
+      # Depth-to-Space: канал (sy*2+sx) → пиксель выхода (2q + (sx, sy)),
+      # плюс билинейный исходник (Overlay).
+      for sy in range(scale):
+        for sx in range(scale):
+          ch = sy * scale + sx
+          comps = ", ".join(f"{res}{layer_index[t]}_{k}[{ch}]" for t in d2s.channels)
+          emit("    {")
+          emit(f"      let o = q{k} * {scale} + vec2i({sx}, {sy});")
+          emit("      let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);")
+          emit(f"      textureStore(tex_out, o, clamp(base + vec4f({comps}), vec4f(0.0), vec4f(1.0)));")
+          emit("    }")
+    else:
+      emit(f"    let base = textureLoad(tex_main, q{k}, 0);")
+      emit(f"    textureStore(tex_out, q{k}, clamp(base + {res}0_{k}, vec4f(0.0), vec4f(1.0)));")
+    emit("  }")
   emit("}")
   return "\n".join(out) + "\n"
 
@@ -255,6 +310,7 @@ import {{ CNNModel }} from '{rel_helpers}/model';
 
 const model: CNNModel = {{
   scale: {scale},
+  block: [{BX}, {BY}],
   textures: {len(ids)},
   stages: [
 {stage_lines}
@@ -265,14 +321,14 @@ export default model;
 """)
   with open(os.path.join(out_dir, "index.ts"), "w", encoding="utf-8") as f:
     f.write(f"""// Сгенерировано conversion/cnn.py — не править руками.
-import {{ Anime4KPipelineDescriptor }} from '{rel_interfaces}';
+import {{ CNNModelPipelineDescriptor }} from '{rel_interfaces}';
 import {{ CNN }} from '{rel_helpers}';
 import model from './model';
 
 export class {class_name} extends CNN {{
-  constructor({{ device, inputTexture }}: Anime4KPipelineDescriptor) {{
+  constructor({{ device, inputTexture, precision }}: CNNModelPipelineDescriptor) {{
     super({{
-      device, inputTexture, model, name: '{class_name}',
+      device, inputTexture, model, name: '{class_name}', precision,
     }});
   }}
 }}

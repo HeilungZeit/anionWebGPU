@@ -65,6 +65,18 @@ export interface Anime4KPipelineDescriptor extends OriginalPipelineDescriptor {
   device: GPUDevice;
 }
 
+/**
+ * Точность арифметики CNN-моделей. 'f16' требует устройства с фичей
+ * 'shader-f16'. По умолчанию f32: на Apple f16 не быстрее (та же скорость
+ * ALU), на GPU с двойной скоростью f16 (Intel, AMD) выигрыш нужно подтвердить
+ * замером. Точность f16 против f32: maxΔ 0.81/255, PSNR 70 дБ.
+ */
+export type CNNPrecision = 'f32' | 'f16';
+
+export interface CNNModelPipelineDescriptor extends Anime4KPipelineDescriptor {
+  precision?: CNNPrecision;
+}
+
 export interface Anime4KPresetPipelineDescriptor extends Anime4KPipelineDescriptor {
   nativeDimensions: { width: number; height: number };
   targetDimensions: { width: number; height: number };
@@ -76,4 +88,6 @@ export type DenoiseModelSize = 'M' | 'L' | 'VL';
 export interface ModeCPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
   /** По умолчанию VL — как в Anime4K Mode C. */
   denoiseModel?: DenoiseModelSize;
+  /** Точность CNN-звеньев, по умолчанию f32. */
+  precision?: CNNPrecision;
 }

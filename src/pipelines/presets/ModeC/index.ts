@@ -19,6 +19,7 @@ export class ModeC implements Anime4KPipeline {
    * @param {Dimensions} options.nativeDimensions - The original dimensions of the input texture.
    * @param {Dimensions} options.targetDimensions - The target dimension for the output texture.
    * @param {DenoiseModelSize} [options.denoiseModel='VL'] - Size of the Upscale-Denoise model.
+   * @param {CNNPrecision} [options.precision='f32'] - Arithmetic precision of the CNN stages.
    */
   constructor({
     device,
@@ -26,6 +27,7 @@ export class ModeC implements Anime4KPipeline {
     nativeDimensions,
     targetDimensions,
     denoiseModel = 'VL',
+    precision = 'f32',
   }: ModeCPresetPipelineDescriptor) {
     let curWidth = nativeDimensions.width;
     let curHeight = nativeDimensions.height;
@@ -39,6 +41,7 @@ export class ModeC implements Anime4KPipeline {
       const upscale1 = new Denoise({
         device,
         inputTexture: currentTexture,
+        precision,
       });
       this.pipelines.push(upscale1);
       currentTexture = upscale1.getOutputTexture();
@@ -87,6 +90,7 @@ export class ModeC implements Anime4KPipeline {
       const upscale2 = new CNNx2M({
         device,
         inputTexture: currentTexture,
+        precision,
       });
       this.pipelines.push(upscale2);
       currentTexture = upscale2.getOutputTexture();

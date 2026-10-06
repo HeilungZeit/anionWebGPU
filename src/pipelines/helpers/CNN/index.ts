@@ -1,4 +1,4 @@
-import { Anime4KPipeline } from '../../interfaces';
+import { Anime4KPipeline, CNNPrecision } from '../../interfaces';
 import { CNNModel } from './model';
 
 export * from './model';
@@ -8,7 +8,14 @@ export interface CNNPipelineDescriptor {
   inputTexture: GPUTexture;
   model: CNNModel;
   name?: string;
+  precision?: CNNPrecision;
 }
+
+// Шейдеры генератора пишут типы через псевдонимы T4/M4.
+const PRELUDE = {
+  f32: 'alias T4 = vec4f;\nalias M4 = mat4x4f;\nalias A4 = vec4f;\n',
+  f16: 'enable f16;\nalias T4 = vec4h;\nalias M4 = mat4x4h;\nalias A4 = vec4h;\n',
+};
 
 interface CompiledStage {
   pipeline: GPUComputePipeline;
@@ -22,18 +29,27 @@ interface CompiledStage {
 export class CNN implements Anime4KPipeline {
   name: string;
 
+  precision: CNNPrecision;
+
   stages: CompiledStage[] = [];
 
   outputTexture: GPUTexture;
+
+  private block: [number, number];
 
   private width: number;
 
   private height: number;
 
   constructor({
-    device, inputTexture, model, name = 'cnn',
+    device, inputTexture, model, name = 'cnn', precision = 'f32',
   }: CNNPipelineDescriptor) {
     this.name = name;
+    if (precision === 'f16' && !device.features.has('shader-f16')) {
+      throw new Error(`${name}: precision 'f16' requires a device with 'shader-f16'.`);
+    }
+    this.precision = precision;
+    this.block = model.block;
     this.width = inputTexture.width;
     this.height = inputTexture.height;
 
@@ -89,7 +105,10 @@ export class CNN implements Anime4KPipeline {
           label: `${name}: stage ${n}`,
           layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
           compute: {
-            module: device.createShaderModule({ label: `${name}: stage ${n}`, code: stage.wgsl }),
+            module: device.createShaderModule({
+              label: `${name}: stage ${n}`,
+              code: PRELUDE[this.precision] + stage.wgsl,
+            }),
             entryPoint: 'computeMain',
           },
         }),
@@ -109,7 +128,10 @@ export class CNN implements Anime4KPipeline {
     this.stages.forEach((stage) => {
       pass.setPipeline(stage.pipeline);
       pass.setBindGroup(0, stage.bindGroup);
-      pass.dispatchWorkgroups(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
+      pass.dispatchWorkgroups(
+        Math.ceil(this.width / (8 * this.block[0])),
+        Math.ceil(this.height / (8 * this.block[1])),
+      );
     });
     pass.end();
   }

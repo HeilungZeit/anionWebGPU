@@ -15,6 +15,8 @@ export interface CNNStage {
 
 export interface CNNModel {
   scale: number;
+  /** Пикселей входа на поток [x, y]; группа — 8×8 потоков. */
+  block: [number, number];
   textures: number;
   stages: CNNStage[];
 }

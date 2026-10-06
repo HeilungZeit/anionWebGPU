@@ -9,6 +9,7 @@ import { CNNModel } from '../../helpers/CNN/model';
 
 const model: CNNModel = {
   scale: 2,
+  block: [1, 1],
   textures: 7,
   stages: [
     {
