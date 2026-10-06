@@ -4,9 +4,11 @@ import { CNN } from '../../helpers/CNN';
 import model from './model';
 
 export class CNNx2M extends CNN {
-  constructor({ device, inputTexture, precision }: CNNModelPipelineDescriptor) {
+  constructor({
+    device, inputTexture, precision, deRing,
+  }: CNNModelPipelineDescriptor) {
     super({
-      device, inputTexture, model, name: 'CNNx2M', precision,
+      device, inputTexture, model, name: 'CNNx2M', precision, deRing,
     });
   }
 }

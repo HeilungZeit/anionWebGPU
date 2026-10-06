@@ -5,9 +5,11 @@ import { CNN } from '../../helpers/CNN';
 import model from './model';
 
 export class ArtCNNC4F16DS extends CNN {
-  constructor({ device, inputTexture, precision }: CNNModelPipelineDescriptor) {
+  constructor({
+    device, inputTexture, precision, deRing,
+  }: CNNModelPipelineDescriptor) {
     super({
-      device, inputTexture, model, name: 'ArtCNNC4F16DS', precision,
+      device, inputTexture, model, name: 'ArtCNNC4F16DS', precision, deRing,
     });
   }
 }

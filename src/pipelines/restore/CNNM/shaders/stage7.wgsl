@@ -1,6 +1,7 @@
 // Anime4K-v4.0-Restore-CNN-(M)-Conv-3x1x1x56
 // Слои: MAIN. Сгенерировано conversion/cnn.py — не править.
 // Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).
+// deRing() — эпилог Clamp Highlights, его добавляет helpers/CNN.
 @group(0) @binding(0) var tex_0: texture_2d<f32>; // conv2d_tf
 @group(0) @binding(1) var tex_1: texture_2d<f32>; // conv2d_1_tf
 @group(0) @binding(2) var tex_2: texture_2d<f32>; // conv2d_2_tf
@@ -91,6 +92,6 @@ fn computeMain(
   let q0 = p0 + vec2i(0, 0);
   if (all(q0 < dim)) {
     let base = textureLoad(tex_main, q0, 0);
-    textureStore(tex_out, q0, clamp(base + s0_0, vec4f(0.0), vec4f(1.0)));
+    textureStore(tex_out, q0, deRing(clamp(base + s0_0, vec4f(0.0), vec4f(1.0)), q0, vec2f(dim)));
   }
 }

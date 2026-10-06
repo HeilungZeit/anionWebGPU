@@ -129,7 +129,7 @@ def emit_d2s(emit, value: str) -> None:
       emit("    let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);")
       emit(f"    let y = clamp({value}[{sy * 2 + sx}], 0.0, 1.0);")
       emit(f"    let rgb = base.rgb + (y - dot(base.rgb, vec3f{LUMA}));")
-      emit("    textureStore(tex_out, o, vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0));")
+      emit("    textureStore(tex_out, o, deRing(vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0), o, out_dim));")
       emit("  }")
 
 
@@ -268,9 +268,11 @@ import {{ CNN }} from '{rel_helpers}';
 import model from './model';
 
 export class {class_name} extends CNN {{
-  constructor({{ device, inputTexture, precision }}: CNNModelPipelineDescriptor) {{
+  constructor({{
+    device, inputTexture, precision, deRing,
+  }}: CNNModelPipelineDescriptor) {{
     super({{
-      device, inputTexture, model, name: '{class_name}', precision,
+      device, inputTexture, model, name: '{class_name}', precision, deRing,
     }});
   }}
 }}

@@ -11,6 +11,8 @@ export interface CNNStage {
   inputs: number[];
   outputs: number[];
   final?: boolean;
+  /** Стадия использует subgroupShuffle: нужна фича 'subgroups' устройства. */
+  subgroups?: boolean;
 }
 
 export interface CNNModel {

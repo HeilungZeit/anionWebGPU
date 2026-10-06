@@ -1,5 +1,5 @@
 import { Downscale } from '../../helpers';
-import { Anime4KPipeline, ModeArtCNNPresetPipelineDescriptor } from '../../interfaces';
+import { Anime4KPipeline, ModeArtCNNPresetPipelineDescriptor, whenReady } from '../../interfaces';
 import { ArtCNNC4F16DS, ArtCNNC4F32DS } from '../../artcnn';
 
 /**
@@ -11,6 +11,9 @@ export class ModeArtCNN implements Anime4KPipeline {
   pipelines: Anime4KPipeline[] = [];
 
   outputTexture: GPUTexture;
+
+  /** Все шейдеры цепочки скомпилированы (в фоне); до этого pass() не вызывать. */
+  ready: Promise<void>;
 
   constructor({
     device,
@@ -36,6 +39,7 @@ export class ModeArtCNN implements Anime4KPipeline {
       }
     }
     this.outputTexture = currentTexture;
+    this.ready = whenReady(this.pipelines);
   }
 
   updateParam(param: string, value: any): void {

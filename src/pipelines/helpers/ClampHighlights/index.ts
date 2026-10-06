@@ -143,3 +143,4 @@ export class ClampHighlights implements Anime4KPipeline {
     return this.outputTexture;
   }
 }
+export * from './stats';

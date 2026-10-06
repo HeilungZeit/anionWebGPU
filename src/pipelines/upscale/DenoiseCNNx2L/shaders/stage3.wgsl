@@ -1,6 +1,7 @@
 // Anime4K-v3.2-Upscale-Denoise-CNN-x2-(L)-Conv-4x3x3x16
 // Слои: conv2d_last_tf, conv2d_last_tf1, conv2d_last_tf2. Сгенерировано conversion/cnn.py — не править.
 // Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).
+// deRing() — эпилог Clamp Highlights, его добавляет helpers/CNN.
 @group(0) @binding(0) var tex_0: texture_2d<f32>; // conv2d_2_tf
 @group(0) @binding(1) var tex_1: texture_2d<f32>; // conv2d_2_tf1
 @group(0) @binding(2) var tex_main: texture_2d<f32>; // MAIN
@@ -484,22 +485,22 @@ fn computeMain(
     {
       let o = q0 * 2 + vec2i(0, 0);
       let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
-      textureStore(tex_out, o, clamp(base + vec4f(s0_0[0], s1_0[0], s2_0[0], s2_0[0]), vec4f(0.0), vec4f(1.0)));
+      textureStore(tex_out, o, deRing(clamp(base + vec4f(s0_0[0], s1_0[0], s2_0[0], s2_0[0]), vec4f(0.0), vec4f(1.0)), o, out_dim));
     }
     {
       let o = q0 * 2 + vec2i(1, 0);
       let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
-      textureStore(tex_out, o, clamp(base + vec4f(s0_0[1], s1_0[1], s2_0[1], s2_0[1]), vec4f(0.0), vec4f(1.0)));
+      textureStore(tex_out, o, deRing(clamp(base + vec4f(s0_0[1], s1_0[1], s2_0[1], s2_0[1]), vec4f(0.0), vec4f(1.0)), o, out_dim));
     }
     {
       let o = q0 * 2 + vec2i(0, 1);
       let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
-      textureStore(tex_out, o, clamp(base + vec4f(s0_0[2], s1_0[2], s2_0[2], s2_0[2]), vec4f(0.0), vec4f(1.0)));
+      textureStore(tex_out, o, deRing(clamp(base + vec4f(s0_0[2], s1_0[2], s2_0[2], s2_0[2]), vec4f(0.0), vec4f(1.0)), o, out_dim));
     }
     {
       let o = q0 * 2 + vec2i(1, 1);
       let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
-      textureStore(tex_out, o, clamp(base + vec4f(s0_0[3], s1_0[3], s2_0[3], s2_0[3]), vec4f(0.0), vec4f(1.0)));
+      textureStore(tex_out, o, deRing(clamp(base + vec4f(s0_0[3], s1_0[3], s2_0[3], s2_0[3]), vec4f(0.0), vec4f(1.0)), o, out_dim));
     }
   }
 }

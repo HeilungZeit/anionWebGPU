@@ -1,5 +1,6 @@
 import { Anime4KPipeline, CNNPrecision } from '../../interfaces';
 import { CNNModel } from './model';
+import { DeRingEpilogue } from '../ClampHighlights/stats';
 
 export * from './model';
 
@@ -9,6 +10,11 @@ export interface CNNPipelineDescriptor {
   model: CNNModel;
   name?: string;
   precision?: CNNPrecision;
+  /**
+   * Статистика ClampStats: финальная стадия сразу выполняет Clamp Highlights
+   * (зажим ореолов) — без отдельного прохода в разрешении выхода.
+   */
+  deRing?: GPUTexture;
 }
 
 // Шейдеры генераторов пишут типы через псевдонимы T4/M4/A4/S1.
@@ -18,8 +24,11 @@ const PRELUDE = {
 };
 
 interface CompiledStage {
-  pipeline: GPUComputePipeline;
+  /** Появляется, когда createComputePipelineAsync завершится. */
+  pipeline?: GPUComputePipeline;
   bindGroup: GPUBindGroup;
+  /** Группа 1 финальной стадии — статистика для deRing(). */
+  deRing?: GPUBindGroup;
 }
 
 /**
@@ -33,6 +42,8 @@ export class CNN implements Anime4KPipeline {
 
   stages: CompiledStage[] = [];
 
+  ready: Promise<void>;
+
   outputTexture: GPUTexture;
 
   private block: [number, number];
@@ -42,7 +53,7 @@ export class CNN implements Anime4KPipeline {
   private height: number;
 
   constructor({
-    device, inputTexture, model, name = 'cnn', precision = 'f32',
+    device, inputTexture, model, name = 'cnn', precision = 'f32', deRing,
   }: CNNPipelineDescriptor) {
     this.name = name;
     if (precision === 'f16' && !device.features.has('shader-f16')) {
@@ -69,7 +80,9 @@ export class CNN implements Anime4KPipeline {
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
     });
     const sampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+    const epilogue = new DeRingEpilogue(device, deRing);
 
+    const compiling: Promise<void>[] = [];
     model.stages.forEach((stage, n) => {
       const layoutEntries: GPUBindGroupLayoutEntry[] = [];
       const entries: GPUBindGroupEntry[] = [];
@@ -100,21 +113,34 @@ export class CNN implements Anime4KPipeline {
       }
 
       const layout = device.createBindGroupLayout({ label: `${name}: stage ${n} layout`, entries: layoutEntries });
-      this.stages.push({
-        pipeline: device.createComputePipeline({
-          label: `${name}: stage ${n}`,
-          layout: device.createPipelineLayout({ bindGroupLayouts: [layout] }),
-          compute: {
-            module: device.createShaderModule({
-              label: `${name}: stage ${n}`,
-              code: PRELUDE[this.precision] + stage.wgsl,
-            }),
-            entryPoint: 'computeMain',
-          },
-        }),
+      const final = Boolean(stage.final);
+      const compiled: CompiledStage = {
         bindGroup: device.createBindGroup({ label: `${name}: stage ${n}`, layout, entries }),
-      });
+        deRing: final ? epilogue.bindGroup : undefined,
+      };
+      this.stages.push(compiled);
+      // Компиляция — в фоне: синхронный createComputePipeline занимал
+      // GPU-процесс браузера на секунды, и вся страница замирала.
+      compiling.push(device.createComputePipelineAsync({
+        label: `${name}: stage ${n}`,
+        layout: device.createPipelineLayout({
+          bindGroupLayouts: final ? [layout, epilogue.layout] : [layout],
+        }),
+        compute: {
+          module: device.createShaderModule({
+            label: `${name}: stage ${n}`,
+            // enable-директивы — до любых объявлений, поэтому subgroups первым.
+            code: (stage.subgroups ? 'enable subgroups;\n' : '')
+              + PRELUDE[this.precision] + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
+          }),
+          entryPoint: 'computeMain',
+          constants: final ? epilogue.constants : {},
+        },
+      }).then((pipeline) => {
+        compiled.pipeline = pipeline;
+      }));
     });
+    this.ready = Promise.all(compiling).then(() => undefined);
   }
 
   updateParam(param: string, value: any): void {
@@ -126,8 +152,12 @@ export class CNN implements Anime4KPipeline {
     // синхронизации, запись стадии видна следующей.
     const pass = encoder.beginComputePass({ label: this.name });
     this.stages.forEach((stage) => {
+      if (!stage.pipeline) {
+        throw new Error(`${this.name}: шейдеры ещё компилируются — дождитесь ready.`);
+      }
       pass.setPipeline(stage.pipeline);
       pass.setBindGroup(0, stage.bindGroup);
+      if (stage.deRing) pass.setBindGroup(1, stage.deRing);
       pass.dispatchWorkgroups(
         Math.ceil(this.width / (8 * this.block[0])),
         Math.ceil(this.height / (8 * this.block[1])),

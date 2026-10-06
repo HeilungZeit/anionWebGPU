@@ -18,6 +18,19 @@ export interface Anime4KPipeline {
    * get the output texture of this pipeline
    */
   getOutputTexture(): GPUTexture;
+
+  /**
+   * Шейдеры скомпилированы. Звенья форка собирают пайплайны через
+   * createComputePipelineAsync — компиляция идёт в фоне и не замораживает
+   * страницу; до готовности pass() бросает ошибку. Звенья без поля готовы
+   * сразу (синхронная сборка).
+   */
+  ready?: Promise<void>;
+}
+
+/** Готовность цепочки: все звенья, у которых есть ready. */
+export function whenReady(pipelines: Anime4KPipeline[]): Promise<void> {
+  return Promise.all(pipelines.map((pipeline) => pipeline.ready)).then(() => undefined);
 }
 
 export interface OriginalPipelineDescriptor {
@@ -51,6 +64,8 @@ export interface DownscalePipelineDescriptor {
   targetDimensions: { width: number; height: number };
   /** По умолчанию 'catmull-rom' (без алиасинга); 'bilinear' — как в mpv. */
   filter?: 'catmull-rom' | 'bilinear';
+  /** Статистика ClampStats: зажим ореолов прямо в последнем проходе. */
+  deRing?: GPUTexture;
   name?: string;
 }
 
@@ -77,6 +92,8 @@ export type CNNPrecision = 'f32' | 'f16';
 
 export interface CNNModelPipelineDescriptor extends Anime4KPipelineDescriptor {
   precision?: CNNPrecision;
+  /** Статистика ClampStats: зажим ореолов прямо в финальной стадии модели. */
+  deRing?: GPUTexture;
 }
 
 export interface Anime4KPresetPipelineDescriptor extends Anime4KPipelineDescriptor {

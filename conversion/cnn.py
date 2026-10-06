@@ -129,9 +129,9 @@ def plan(convs: list[Conv], d2s: DepthToSpace | None) -> list[Stage]:
 
 
 # Параметры ядра (Э5), переопределяются окружением для замеров. По умолчанию —
-# то, что быстрее на Apple M1 Pro (журнал в PLAN.md): поток на пиксель, без
-# плитки. На M1 Pro блок 2×1 и больше — в 4–5 раз медленнее (регистры
-# вытесняются в память), плитка — на 17% медленнее.
+# то, что быстрее на Apple M1 Pro (журнал в docs/PLAN.md): поток на пиксель,
+# без плитки и subgroups. На M1 Pro блок 2×1 и больше — в 4–5 раз медленнее
+# (регистры вытесняются в память), плитка — на 17%, subgroups — на 30–55%.
 #   CNN_BX, CNN_BY — пикселей на поток по x/y (блокировка по регистрам:
 #                    каждый вес подгружается один раз на BX·BY пикселей);
 #   CNN_TILE=1     — плитка входа в shared memory для 3×3.
@@ -139,6 +139,9 @@ WG = 8
 BX = int(os.environ.get("CNN_BX", "1"))
 BY = int(os.environ.get("CNN_BY", "1"))
 TILE = os.environ.get("CNN_TILE", "0") == "1"
+#   CNN_SUBGROUPS=1 — соседей 3×3 брать у соседних потоков (subgroupShuffle),
+#                    из текстуры читать только свой пиксель и края subgroup.
+SUBGROUPS = os.environ.get("CNN_SUBGROUPS", "0") == "1"
 
 
 
@@ -148,6 +151,8 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
   emit(f"// {stage.layers[0].desc}")
   emit(f"// Слои: {', '.join(l.save for l in stage.layers)}. Сгенерировано conversion/cnn.py — не править.")
   emit("// Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).")
+  if stage.final:
+    emit("// deRing() — эпилог Clamp Highlights, его добавляет helpers/CNN.")
   binding = 0
   for i, name in enumerate(stage.inputs):
     emit(f"@group(0) @binding({binding}) var tex_{i}: texture_2d<f32>; // {name}")
@@ -179,6 +184,11 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
   emit("  @builtin(global_invocation_id) gid: vec3u,")
   emit("  @builtin(local_invocation_id) lid: vec3u,")
   emit("  @builtin(workgroup_id) wid: vec3u,")
+  shuffled = SUBGROUPS and kernel == 3 and not tiled and BX == 1 and BY == 1
+  if shuffled:
+    emit("  @builtin(local_invocation_index) lidx: u32,")
+    emit("  @builtin(subgroup_invocation_id) sg_lane: u32,")
+    emit("  @builtin(subgroup_size) sg_size: u32,")
   emit(") {")
   emit("  let dim = vec2i(textureDimensions(tex_0));")
   emit("  let last = dim - 1;")
@@ -198,8 +208,42 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
     emit("  workgroupBarrier();")
     emit(f"  let c = (lid.y * {BY}u + 1u) * {tw}u + lid.x * {BX}u + 1u;")
 
+  if shuffled:
+    # Свой пиксель — из текстуры, соседи — у соседних потоков группы 8×8.
+    # Раскладку потоков по subgroup WebGPU не гарантирует, поэтому вместе с
+    # пикселем передаётся индекс потока: пришёл не тот сосед (край subgroup
+    # или группы) — читаем сами. Математика та же на любой раскладке.
+    emit("  let lpos = vec2i(lid.xy);")
+    for dy in (-1, 0, 1):
+      for dx in (-1, 0, 1):
+        if (dx, dy) == (0, 0):
+          continue
+        n = f"{dx + 1}{dy + 1}"
+        emit(f"  let n{n} = lpos + vec2i({dx}, {dy});")
+        delta = dy * WG + dx
+        shift = f"+ {delta}" if delta > 0 else f"- {-delta}"
+        emit(f"  let src{n} = u32(clamp(i32(sg_lane) {shift}, 0, i32(sg_size) - 1));")
+        # Shuffle — до проверок: && ленивый, а subgroup-операцию обязаны
+        # выполнить все потоки subgroup.
+        emit(f"  let from{n} = subgroupShuffle(lidx, src{n});")
+        emit(f"  let ok{n} = all(n{n} >= vec2i(0)) && all(n{n} < vec2i({WG}))"
+             f" && from{n} == u32(n{n}.y * {WG} + n{n}.x);")
+    for i in range(len(stage.inputs)):
+      emit(f"  let c{i} = textureLoad(tex_{i}, clamp(p0, vec2i(0), last), 0);")
+      for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+          if (dx, dy) == (0, 0):
+            emit(f"  let {var(i, 0, 0)} = T4(c{i});")
+            continue
+          n = f"{dx + 1}{dy + 1}"
+          emit(f"  var s{i}_{n} = subgroupShuffle(c{i}, src{n});")
+          emit(f"  if (!ok{n}) {{")
+          emit(f"    s{i}_{n} = textureLoad(tex_{i}, clamp(p0 + vec2i({dx}, {dy}), vec2i(0), last), 0);")
+          emit("  }")
+          emit(f"  let {var(i, dx, dy)} = T4(s{i}_{n});")
+
   # Загрузки: каждая текстура в каждой точке окрестности — один раз на стадию.
-  for i in range(len(stage.inputs)):
+  for i in range(len(stage.inputs) if not shuffled else 0):
     for ly in ys:
       for lx in xs:
         if tiled:
@@ -255,11 +299,11 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
           emit("    {")
           emit(f"      let o = q{k} * {scale} + vec2i({sx}, {sy});")
           emit("      let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);")
-          emit(f"      textureStore(tex_out, o, clamp(base + vec4f({comps}), vec4f(0.0), vec4f(1.0)));")
+          emit(f"      textureStore(tex_out, o, deRing(clamp(base + vec4f({comps}), vec4f(0.0), vec4f(1.0)), o, out_dim));")
           emit("    }")
     else:
       emit(f"    let base = textureLoad(tex_main, q{k}, 0);")
-      emit(f"    textureStore(tex_out, q{k}, clamp(base + {res}0_{k}, vec4f(0.0), vec4f(1.0)));")
+      emit(f"    textureStore(tex_out, q{k}, deRing(clamp(base + {res}0_{k}, vec4f(0.0), vec4f(1.0)), q{k}, vec2f(dim)));")
     emit("  }")
   emit("}")
   return "\n".join(out) + "\n"
@@ -290,7 +334,8 @@ def main() -> None:
       for layer in stage.layers:
         ids[layer.save] = len(ids)
         outputs.append(ids[layer.save])
-    graph.append((n, [ids[t] for t in stage.inputs], outputs, stage.final))
+    graph.append((n, [ids[t] for t in stage.inputs], outputs, stage.final,
+                  SUBGROUPS and stage.layers[0].kernel == 3 and not TILE and BX == 1 and BY == 1))
 
   # Пути считаются от корня репозитория: запускать из него.
   src = os.path.relpath(glsl).replace(os.sep, "/")
@@ -299,8 +344,9 @@ def main() -> None:
   imports = "\n".join(f"import stage{n} from './shaders/stage{n}.wgsl';" for n, *_ in graph)
   stage_lines = "\n".join(
     f"    {{\n      wgsl: stage{n},\n      inputs: [{', '.join(map(str, ins))}],\n"
-    f"      outputs: [{', '.join(map(str, outs))}],\n" + ("      final: true,\n" if final else "") + "    },"
-    for n, ins, outs, final in graph)
+    f"      outputs: [{', '.join(map(str, outs))}],\n" + ("      final: true,\n" if final else "")
+    + ("      subgroups: true,\n" if sg else "") + "    },"
+    for n, ins, outs, final, sg in graph)
   with open(os.path.join(out_dir, "model.ts"), "w", encoding="utf-8") as f:
     f.write(f"""// Сгенерировано conversion/cnn.py — не править руками.
 // Источник: {src}
@@ -326,9 +372,11 @@ import {{ CNN }} from '{rel_helpers}';
 import model from './model';
 
 export class {class_name} extends CNN {{
-  constructor({{ device, inputTexture, precision }}: CNNModelPipelineDescriptor) {{
+  constructor({{
+    device, inputTexture, precision, deRing,
+  }}: CNNModelPipelineDescriptor) {{
     super({{
-      device, inputTexture, model, name: '{class_name}', precision,
+      device, inputTexture, model, name: '{class_name}', precision, deRing,
     }});
   }}
 }}
