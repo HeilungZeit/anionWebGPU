@@ -11,4 +11,7 @@ export default defineConfig({
   target: 'es2022',
   loader: { '.wgsl': 'text' },
   dts: true,
+  // Типы WebGPU (GPUDevice, GPUTextureUsage…) приходят потребителю вместе с
+  // пакетом, как в 1.0.0: tsc сам дописывал эту ссылку в .d.ts, tsdown — нет.
+  banner: { dts: '/// <reference types="@webgpu/types" />' },
 });
