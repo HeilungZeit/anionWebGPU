@@ -10,26 +10,27 @@ import { CNNModel } from '../../helpers/CNN/model';
 const model: CNNModel = {
   scale: 2,
   block: [1, 1],
-  textures: 7,
+  textures: 4,
+  packed: [1, 2, 3],
   stages: [
     {
       wgsl: stage0,
       inputs: [0],
-      outputs: [1, 2],
+      outputs: [1],
     },
     {
       wgsl: stage1,
-      inputs: [1, 2],
-      outputs: [3, 4],
+      inputs: [1],
+      outputs: [2],
     },
     {
       wgsl: stage2,
-      inputs: [3, 4],
-      outputs: [5, 6],
+      inputs: [2],
+      outputs: [3],
     },
     {
       wgsl: stage3,
-      inputs: [5, 6],
+      inputs: [3],
       outputs: [],
       final: true,
     },

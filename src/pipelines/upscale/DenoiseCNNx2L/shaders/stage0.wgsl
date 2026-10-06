@@ -2,8 +2,7 @@
 // Слои: conv2d_tf, conv2d_tf1. Сгенерировано conversion/cnn.py — не править.
 // Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).
 @group(0) @binding(0) var tex_0: texture_2d<f32>; // MAIN
-@group(0) @binding(1) var out_0: texture_storage_2d<rgba16float, write>; // conv2d_tf
-@group(0) @binding(2) var out_1: texture_storage_2d<rgba16float, write>; // conv2d_tf1
+@group(0) @binding(1) var out_0: texture_storage_2d<rgba32uint, write>; // conv2d_tf, conv2d_tf1
 
 @compute @workgroup_size(8, 8)
 fn computeMain(
@@ -105,7 +104,6 @@ fn computeMain(
   let s1_0 = vec4f(r1_0);
   let q0 = p0 + vec2i(0, 0);
   if (all(q0 < dim)) {
-    textureStore(out_0, q0, s0_0);
-    textureStore(out_1, q0, s1_0);
+    textureStore(out_0, q0, vec4u(pack2x16float(s0_0.xy), pack2x16float(s0_0.zw), pack2x16float(s1_0.xy), pack2x16float(s1_0.zw)));
   }
 }

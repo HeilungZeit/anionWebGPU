@@ -1,10 +1,8 @@
 // Anime4K-v3.2-Upscale-Denoise-CNN-x2-(VL)-Conv-4x3x3x16
 // Слои: conv2d_1_tf, conv2d_1_tf1. Сгенерировано conversion/cnn.py — не править.
 // Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).
-@group(0) @binding(0) var tex_0: texture_2d<f32>; // conv2d_tf
-@group(0) @binding(1) var tex_1: texture_2d<f32>; // conv2d_tf1
-@group(0) @binding(2) var out_0: texture_storage_2d<rgba16float, write>; // conv2d_1_tf
-@group(0) @binding(3) var out_1: texture_storage_2d<rgba16float, write>; // conv2d_1_tf1
+@group(0) @binding(0) var tex_0: texture_2d<u32>; // conv2d_tf, conv2d_tf1
+@group(0) @binding(1) var out_0: texture_storage_2d<rgba32uint, write>; // conv2d_1_tf, conv2d_1_tf1
 
 @compute @workgroup_size(8, 8)
 fn computeMain(
@@ -15,24 +13,33 @@ fn computeMain(
   let dim = vec2i(textureDimensions(tex_0));
   let last = dim - 1;
   let p0 = vec2i(gid.xy) * vec2i(1, 1);
-  let t0_0_0 = T4(textureLoad(tex_0, clamp(p0 + vec2i(-1, -1), vec2i(0), last), 0));
-  let t0_1_0 = T4(textureLoad(tex_0, clamp(p0 + vec2i(0, -1), vec2i(0), last), 0));
-  let t0_2_0 = T4(textureLoad(tex_0, clamp(p0 + vec2i(1, -1), vec2i(0), last), 0));
-  let t0_0_1 = T4(textureLoad(tex_0, clamp(p0 + vec2i(-1, 0), vec2i(0), last), 0));
-  let t0_1_1 = T4(textureLoad(tex_0, clamp(p0, vec2i(0), last), 0));
-  let t0_2_1 = T4(textureLoad(tex_0, clamp(p0 + vec2i(1, 0), vec2i(0), last), 0));
-  let t0_0_2 = T4(textureLoad(tex_0, clamp(p0 + vec2i(-1, 1), vec2i(0), last), 0));
-  let t0_1_2 = T4(textureLoad(tex_0, clamp(p0 + vec2i(0, 1), vec2i(0), last), 0));
-  let t0_2_2 = T4(textureLoad(tex_0, clamp(p0 + vec2i(1, 1), vec2i(0), last), 0));
-  let t1_0_0 = T4(textureLoad(tex_1, clamp(p0 + vec2i(-1, -1), vec2i(0), last), 0));
-  let t1_1_0 = T4(textureLoad(tex_1, clamp(p0 + vec2i(0, -1), vec2i(0), last), 0));
-  let t1_2_0 = T4(textureLoad(tex_1, clamp(p0 + vec2i(1, -1), vec2i(0), last), 0));
-  let t1_0_1 = T4(textureLoad(tex_1, clamp(p0 + vec2i(-1, 0), vec2i(0), last), 0));
-  let t1_1_1 = T4(textureLoad(tex_1, clamp(p0, vec2i(0), last), 0));
-  let t1_2_1 = T4(textureLoad(tex_1, clamp(p0 + vec2i(1, 0), vec2i(0), last), 0));
-  let t1_0_2 = T4(textureLoad(tex_1, clamp(p0 + vec2i(-1, 1), vec2i(0), last), 0));
-  let t1_1_2 = T4(textureLoad(tex_1, clamp(p0 + vec2i(0, 1), vec2i(0), last), 0));
-  let t1_2_2 = T4(textureLoad(tex_1, clamp(p0 + vec2i(1, 1), vec2i(0), last), 0));
+  let u0_0_0 = textureLoad(tex_0, clamp(p0 + vec2i(-1, -1), vec2i(0), last), 0);
+  let u0_1_0 = textureLoad(tex_0, clamp(p0 + vec2i(0, -1), vec2i(0), last), 0);
+  let u0_2_0 = textureLoad(tex_0, clamp(p0 + vec2i(1, -1), vec2i(0), last), 0);
+  let u0_0_1 = textureLoad(tex_0, clamp(p0 + vec2i(-1, 0), vec2i(0), last), 0);
+  let u0_1_1 = textureLoad(tex_0, clamp(p0, vec2i(0), last), 0);
+  let u0_2_1 = textureLoad(tex_0, clamp(p0 + vec2i(1, 0), vec2i(0), last), 0);
+  let u0_0_2 = textureLoad(tex_0, clamp(p0 + vec2i(-1, 1), vec2i(0), last), 0);
+  let u0_1_2 = textureLoad(tex_0, clamp(p0 + vec2i(0, 1), vec2i(0), last), 0);
+  let u0_2_2 = textureLoad(tex_0, clamp(p0 + vec2i(1, 1), vec2i(0), last), 0);
+  let t0_0_0 = unpack_half(u0_0_0.x, u0_0_0.y);
+  let t0_1_0 = unpack_half(u0_1_0.x, u0_1_0.y);
+  let t0_2_0 = unpack_half(u0_2_0.x, u0_2_0.y);
+  let t0_0_1 = unpack_half(u0_0_1.x, u0_0_1.y);
+  let t0_1_1 = unpack_half(u0_1_1.x, u0_1_1.y);
+  let t0_2_1 = unpack_half(u0_2_1.x, u0_2_1.y);
+  let t0_0_2 = unpack_half(u0_0_2.x, u0_0_2.y);
+  let t0_1_2 = unpack_half(u0_1_2.x, u0_1_2.y);
+  let t0_2_2 = unpack_half(u0_2_2.x, u0_2_2.y);
+  let t1_0_0 = unpack_half(u0_0_0.z, u0_0_0.w);
+  let t1_1_0 = unpack_half(u0_1_0.z, u0_1_0.w);
+  let t1_2_0 = unpack_half(u0_2_0.z, u0_2_0.w);
+  let t1_0_1 = unpack_half(u0_0_1.z, u0_0_1.w);
+  let t1_1_1 = unpack_half(u0_1_1.z, u0_1_1.w);
+  let t1_2_1 = unpack_half(u0_2_1.z, u0_2_1.w);
+  let t1_0_2 = unpack_half(u0_0_2.z, u0_0_2.w);
+  let t1_1_2 = unpack_half(u0_1_2.z, u0_1_2.w);
+  let t1_2_2 = unpack_half(u0_2_2.z, u0_2_2.w);
   // conv2d_1_tf
   var r0_0 = A4(0.0);
   {
@@ -331,7 +338,6 @@ fn computeMain(
   let s1_0 = vec4f(r1_0);
   let q0 = p0 + vec2i(0, 0);
   if (all(q0 < dim)) {
-    textureStore(out_0, q0, s0_0);
-    textureStore(out_1, q0, s1_0);
+    textureStore(out_0, q0, vec4u(pack2x16float(s0_0.xy), pack2x16float(s0_0.zw), pack2x16float(s1_0.xy), pack2x16float(s1_0.zw)));
   }
 }

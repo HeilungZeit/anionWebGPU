@@ -32,8 +32,9 @@
     <span class="muted">Без файла — синтетический кадр с JPEG-артефактами.</span>
     <div>
       <label>длительность ролика, с <input type="number" id="duration" value="20" min="2" step="1" style="width:5em"></label>
+      <label>к/с ролика <input type="number" id="fps" value="23.976" min="1" step="0.001" style="width:6em"></label>
       <button id="runVideo" disabled>Прогнать ролик</button>
-      <span class="muted">Ролик играется с «времени видео» дважды на режим — без ворот и с ними;
+      <span class="muted">Ролик проходится покадрово с «времени видео» дважды на режим — без ворот и с ними;
         исходник — родное разрешение ролика, цель — по кратности первого сценария.</span>
     </div>
   </fieldset>

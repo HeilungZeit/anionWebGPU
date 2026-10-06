@@ -2,23 +2,16 @@
 // Слои: conv2d_last_tf, conv2d_last_tf1, conv2d_last_tf2. Сгенерировано conversion/cnn.py — не править.
 // Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).
 // deRing() — эпилог Clamp Highlights, его добавляет helpers/CNN.
-@group(0) @binding(0) var tex_0: texture_2d<f32>; // conv2d_tf
-@group(0) @binding(1) var tex_1: texture_2d<f32>; // conv2d_tf1
-@group(0) @binding(2) var tex_2: texture_2d<f32>; // conv2d_1_tf
-@group(0) @binding(3) var tex_3: texture_2d<f32>; // conv2d_1_tf1
-@group(0) @binding(4) var tex_4: texture_2d<f32>; // conv2d_2_tf
-@group(0) @binding(5) var tex_5: texture_2d<f32>; // conv2d_2_tf1
-@group(0) @binding(6) var tex_6: texture_2d<f32>; // conv2d_3_tf
-@group(0) @binding(7) var tex_7: texture_2d<f32>; // conv2d_3_tf1
-@group(0) @binding(8) var tex_8: texture_2d<f32>; // conv2d_4_tf
-@group(0) @binding(9) var tex_9: texture_2d<f32>; // conv2d_4_tf1
-@group(0) @binding(10) var tex_10: texture_2d<f32>; // conv2d_5_tf
-@group(0) @binding(11) var tex_11: texture_2d<f32>; // conv2d_5_tf1
-@group(0) @binding(12) var tex_12: texture_2d<f32>; // conv2d_6_tf
-@group(0) @binding(13) var tex_13: texture_2d<f32>; // conv2d_6_tf1
-@group(0) @binding(14) var tex_main: texture_2d<f32>; // MAIN
-@group(0) @binding(15) var main_sampler: sampler;
-@group(0) @binding(16) var tex_out: texture_storage_2d<rgba16float, write>;
+@group(0) @binding(0) var tex_0: texture_2d<u32>; // conv2d_tf, conv2d_tf1
+@group(0) @binding(1) var tex_1: texture_2d<u32>; // conv2d_1_tf, conv2d_1_tf1
+@group(0) @binding(2) var tex_2: texture_2d<u32>; // conv2d_2_tf, conv2d_2_tf1
+@group(0) @binding(3) var tex_3: texture_2d<u32>; // conv2d_3_tf, conv2d_3_tf1
+@group(0) @binding(4) var tex_4: texture_2d<u32>; // conv2d_4_tf, conv2d_4_tf1
+@group(0) @binding(5) var tex_5: texture_2d<u32>; // conv2d_5_tf, conv2d_5_tf1
+@group(0) @binding(6) var tex_6: texture_2d<u32>; // conv2d_6_tf, conv2d_6_tf1
+@group(0) @binding(7) var tex_main: texture_2d<f32>; // MAIN
+@group(0) @binding(8) var main_sampler: sampler;
+@group(0) @binding(9) var tex_out: texture_storage_2d<rgba16float, write>;
 
 @compute @workgroup_size(8, 8)
 fn computeMain(
@@ -29,20 +22,27 @@ fn computeMain(
   let dim = vec2i(textureDimensions(tex_0));
   let last = dim - 1;
   let p0 = vec2i(gid.xy) * vec2i(1, 1);
-  let t0_0_0 = T4(textureLoad(tex_0, clamp(p0, vec2i(0), last), 0));
-  let t1_0_0 = T4(textureLoad(tex_1, clamp(p0, vec2i(0), last), 0));
-  let t2_0_0 = T4(textureLoad(tex_2, clamp(p0, vec2i(0), last), 0));
-  let t3_0_0 = T4(textureLoad(tex_3, clamp(p0, vec2i(0), last), 0));
-  let t4_0_0 = T4(textureLoad(tex_4, clamp(p0, vec2i(0), last), 0));
-  let t5_0_0 = T4(textureLoad(tex_5, clamp(p0, vec2i(0), last), 0));
-  let t6_0_0 = T4(textureLoad(tex_6, clamp(p0, vec2i(0), last), 0));
-  let t7_0_0 = T4(textureLoad(tex_7, clamp(p0, vec2i(0), last), 0));
-  let t8_0_0 = T4(textureLoad(tex_8, clamp(p0, vec2i(0), last), 0));
-  let t9_0_0 = T4(textureLoad(tex_9, clamp(p0, vec2i(0), last), 0));
-  let t10_0_0 = T4(textureLoad(tex_10, clamp(p0, vec2i(0), last), 0));
-  let t11_0_0 = T4(textureLoad(tex_11, clamp(p0, vec2i(0), last), 0));
-  let t12_0_0 = T4(textureLoad(tex_12, clamp(p0, vec2i(0), last), 0));
-  let t13_0_0 = T4(textureLoad(tex_13, clamp(p0, vec2i(0), last), 0));
+  let u0_0_0 = textureLoad(tex_0, clamp(p0, vec2i(0), last), 0);
+  let u1_0_0 = textureLoad(tex_1, clamp(p0, vec2i(0), last), 0);
+  let u2_0_0 = textureLoad(tex_2, clamp(p0, vec2i(0), last), 0);
+  let u3_0_0 = textureLoad(tex_3, clamp(p0, vec2i(0), last), 0);
+  let u4_0_0 = textureLoad(tex_4, clamp(p0, vec2i(0), last), 0);
+  let u5_0_0 = textureLoad(tex_5, clamp(p0, vec2i(0), last), 0);
+  let u6_0_0 = textureLoad(tex_6, clamp(p0, vec2i(0), last), 0);
+  let t0_0_0 = unpack_half(u0_0_0.x, u0_0_0.y);
+  let t1_0_0 = unpack_half(u0_0_0.z, u0_0_0.w);
+  let t2_0_0 = unpack_half(u1_0_0.x, u1_0_0.y);
+  let t3_0_0 = unpack_half(u1_0_0.z, u1_0_0.w);
+  let t4_0_0 = unpack_half(u2_0_0.x, u2_0_0.y);
+  let t5_0_0 = unpack_half(u2_0_0.z, u2_0_0.w);
+  let t6_0_0 = unpack_half(u3_0_0.x, u3_0_0.y);
+  let t7_0_0 = unpack_half(u3_0_0.z, u3_0_0.w);
+  let t8_0_0 = unpack_half(u4_0_0.x, u4_0_0.y);
+  let t9_0_0 = unpack_half(u4_0_0.z, u4_0_0.w);
+  let t10_0_0 = unpack_half(u5_0_0.x, u5_0_0.y);
+  let t11_0_0 = unpack_half(u5_0_0.z, u5_0_0.w);
+  let t12_0_0 = unpack_half(u6_0_0.x, u6_0_0.y);
+  let t13_0_0 = unpack_half(u6_0_0.z, u6_0_0.w);
   // conv2d_last_tf
   var r0_0 = A4(0.0);
   {

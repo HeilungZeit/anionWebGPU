@@ -476,33 +476,18 @@ async function run() {
 // ---------- прогон ролика ----------
 
 /**
- * Играет ролик `seconds` секунд с текущей позиции и на каждый показанный кадр
- * зовёт `onFrame`. Кадры, показанные, пока onFrame ждал GPU, не обработаны —
- * их число возвращается как `missed` (по счётчику presentedFrames).
+ * Покадровый проход по ролику: перемотка в середину каждого кадра и `onFrame`.
+ * Не воспроизведение: requestVideoFrameCallback не срабатывает на скрытой
+ * странице, а при воспроизведении кадры, пришедшие пока стенд ждал GPU,
+ * терялись бы и занижали долю повторов. Нужна частота кадров ролика.
  */
-function playSegment(video, seconds, onFrame) {
-  const start = video.currentTime;
-  let missed = 0; let lastPresented = null;
-  return new Promise((done, fail) => {
-    const step = async (now, meta) => {
-      try {
-        if (lastPresented !== null) missed += Math.max(0, meta.presentedFrames - lastPresented - 1);
-        lastPresented = meta.presentedFrames;
-        await onFrame();
-        if (video.currentTime - start >= seconds || video.ended) {
-          video.pause();
-          done({ missed });
-          return;
-        }
-        video.requestVideoFrameCallback(step);
-      } catch (error) {
-        video.pause();
-        fail(error);
-      }
-    };
-    video.requestVideoFrameCallback(step);
-    video.play().catch(fail);
-  });
+async function stepFrames(video, start, seconds, fps, onFrame) {
+  const count = Math.floor(seconds * fps);
+  for (let n = 0; n < count; n += 1) {
+    video.currentTime = start + (n + 0.5) / fps;
+    await new Promise((ok) => { video.addEventListener('seeked', ok, { once: true }); });
+    await onFrame();
+  }
 }
 
 /** Гистограмма max |Δ| кадра с опорным, в уровнях 8 бит. */
@@ -535,13 +520,14 @@ async function runVideo() {
     const seconds = Math.max(2, Number($('duration').value) || 20);
     const seek = Math.min(Number($('seek').value) || 0, video.duration - seconds);
     const threshold = Number($('threshold').value) || 0;
+    const fps = Number($('fps').value) || 23.976;
     const modes = [...document.querySelectorAll('input[name=mode]:checked')].map((e) => e.value);
     const input = device.createTexture({
       size: src,
       format: 'rgba8unorm',
       usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT,
     });
-    log(`ролик ${src.join('×')} → ${dst.join('×')}, ${seconds} с с ${seek.toFixed(1)} с, порог ${threshold}`);
+    log(`ролик ${src.join('×')} → ${dst.join('×')}, ${seconds} с с ${seek.toFixed(1)} с, ${fps} к/с, порог ${threshold}`);
 
     const rows = [];
     for (const mode of modes) {
@@ -554,11 +540,8 @@ async function runVideo() {
         });
         // Сборка прогнала один кадр; счётчики ворот — с начала ролика.
         const before = preset.gate ? await preset.gate.readStats() : null;
-        video.currentTime = seek;
-        await new Promise((ok) => { video.addEventListener('seeked', ok, { once: true }); });
-
         const times = []; const hist = DIFF_BUCKETS.map(() => 0);
-        const { missed } = await playSegment(video, seconds, async () => {
+        await stepFrames(video, seek, seconds, fps, async () => {
           const start = performance.now();
           device.queue.copyExternalImageToTexture({ source: video }, { texture: input }, src);
           const encoder = device.createCommandEncoder();
@@ -578,7 +561,7 @@ async function runVideo() {
           log(`  max |Δ| с опорным (уровни 8 бит): ${DIFF_BUCKETS.map(([lo, hi], i) => `${lo === hi ? lo : `${lo}–${hi === Infinity ? '∞' : hi}`}: ${hist[i]}`).join(' · ')}`);
         }
         const mean = times.reduce((a, b) => a + b, 0) / times.length;
-        rows.push({ label, frames: times.length, missed, mean, p95: p95(times), skipped });
+        rows.push({ label, frames: times.length, mean, p95: p95(times), skipped });
       }
     }
     input.destroy();
@@ -586,14 +569,14 @@ async function runVideo() {
 
     $('results').innerHTML = `
       <table>
-        <tr><th>прогон</th><th>кадров</th><th>пропущено плеером</th><th>кадр, мс (среднее / p95)</th><th>повторов</th></tr>
-        ${rows.map((r) => `<tr><td>${r.label}</td><td>${r.frames}</td><td>${r.missed}</td>
+        <tr><th>прогон</th><th>кадров</th><th>кадр, мс (среднее / p95)</th><th>повторов</th></tr>
+        ${rows.map((r) => `<tr><td>${r.label}</td><td>${r.frames}</td>
           <td>${fmt(r.mean)} / ${fmt(r.p95)}</td>
           <td>${r.skipped === null ? '—' : `${(r.skipped * 100).toFixed(1)}%`}</td></tr>`).join('')}
       </table>
       <p class="muted">«Кадр» — копия кадра + цепочка до onSubmittedWorkDone, как в цикле anion.
-      «Пропущено плеером» — кадры, показанные, пока стенд ждал GPU: при них соседние обработанные
-      кадры дальше друг от друга, и повторов меньше, чем в ролике на самом деле.</p>`;
+      Ролик проходится покадрово перемоткой, без потерь кадров; среднее по всем кадрам
+      учитывает и пропущенные воротами.</p>`;
     log('готово');
     device.destroy();
   } catch (error) {
