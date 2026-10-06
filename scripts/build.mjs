@@ -35,7 +35,14 @@ for (const file of shaders) {
 
 function fullySpecified(fromFile, spec) {
   if (!spec.startsWith('.')) return spec;
-  if (spec.endsWith('.wgsl')) return `${spec}.js`;
+  if (spec.endsWith('.wgsl')) {
+    // tsc .wgsl не проверяет (declare module '*.wgsl'): без этой проверки
+    // пропавший шейдер всплыл бы только в браузере.
+    if (!existsSync(resolve(dirname(fromFile), `${spec}.js`))) {
+      throw new Error(`${relative(root, fromFile)}: нет шейдера ${spec}`);
+    }
+    return `${spec}.js`;
+  }
   const base = resolve(dirname(fromFile), spec);
   if (existsSync(`${base}.js`) || existsSync(`${base}.d.ts`)) return `${spec}.js`;
   if (existsSync(join(base, 'index.js')) || existsSync(join(base, 'index.d.ts'))) return `${spec}/index.js`;

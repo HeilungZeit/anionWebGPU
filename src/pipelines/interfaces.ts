@@ -49,6 +49,8 @@ export interface DownscalePipelineDescriptor {
   device: GPUDevice;
   inputTexture: GPUTexture;
   targetDimensions: { width: number; height: number };
+  /** По умолчанию 'catmull-rom' (без алиасинга); 'bilinear' — как в mpv. */
+  filter?: 'catmull-rom' | 'bilinear';
   name?: string;
 }
 
