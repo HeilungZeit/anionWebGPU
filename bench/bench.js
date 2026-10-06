@@ -45,12 +45,14 @@ async function initDevice() {
   if (!adapter) throw new Error('Нет адаптера WebGPU');
 
   const hasTimestamps = adapter.features.has('timestamp-query');
-  // С фичей shader-f16 кандидат получает precision: 'f16'.
-  const useF16 = $('f16').checked && adapter.features.has('shader-f16');
+  const hasF16 = adapter.features.has('shader-f16');
+  // С флажком shader-f16 кандидат получает precision: 'f16'. Сама фича
+  // включается всегда, когда есть: без неё не работают «Детали».
+  const useF16 = $('f16').checked && hasF16;
   const device = await adapter.requestDevice({
     requiredFeatures: [
       ...(hasTimestamps ? ['timestamp-query'] : []),
-      ...(useF16 ? ['shader-f16'] : []),
+      ...(hasF16 ? ['shader-f16'] : []),
     ],
     // Чтение выхода 4K в rgba32f — ~130 МБ, больше лимита по умолчанию.
     requiredLimits: {
@@ -66,6 +68,30 @@ async function initDevice() {
     + ` · shader-f16: ${adapter.features.has('shader-f16') ? 'да' : 'нет'}`
     + ` · subgroups: ${adapter.features.has('subgroups') ? 'да' : 'нет'}`;
   return { device, hasTimestamps, useF16 };
+}
+
+// ---------- веса «Деталей» ----------
+
+let compactModel = null;
+
+/** Веса AnimeJaNai V2 SuperUltraCompact из bench/models (локальные). */
+async function loadCompactModel() {
+  if (compactModel) return compactModel;
+  const [meta, weights] = await Promise.all([
+    fetch('./models/janai-v2/model.json').then((r) => { if (!r.ok) throw new Error('нет bench/models/janai-v2/model.json'); return r.json(); }),
+    fetch('./models/janai-v2/weights.bin').then((r) => { if (!r.ok) throw new Error('нет bench/models/janai-v2/weights.bin'); return r.arrayBuffer(); }),
+  ]);
+  compactModel = { meta, weights };
+  return compactModel;
+}
+
+/** Опции пресета под режим: веса и ядро «Деталей», модели остальных. */
+async function presetOptions(mode, precision) {
+  const common = {
+    denoiseModel: $('denoiseModel').value, precision, model: $('artModel').value,
+  };
+  if (mode !== 'ModeCompact') return common;
+  return { ...common, model: await loadCompactModel(), kernel: $('compactKernel').value };
 }
 
 // ---------- источник ----------
@@ -403,28 +429,33 @@ async function run() {
     for (const sc of scenarios) {
       const input = await uploadTexture(device, bitmap, sc.src);
       for (const mode of modes) {
-        const size = mode === 'ModeArtCNN' ? artModel : (denoiseModel !== 'VL' && denoiseModel) || '';
-        const variant = [size, useF16 ? 'f16' : ''].filter(Boolean).join('/');
+        const compact = mode === 'ModeCompact';
+        const size = mode === 'ModeArtCNN' ? artModel : compact ? $('compactKernel').value : (denoiseModel !== 'VL' && denoiseModel) || '';
+        const variant = [size, useF16 && !compact ? 'f16' : ''].filter(Boolean).join('/');
         const label = `${mode}${variant ? `/${variant}` : ''} ${sc.src.join('×')}→${sc.dst.join('×')}`;
         log(`▶ ${label}`);
 
         // Эталон всегда VL; при M/L сверка показывает разницу моделей, а не ошибку.
         // С пропуском повторов на неподвижном кадре считается только первый:
         // замер показывает цену повтора (сравнение кадров), а не цепочки.
+        const options = await presetOptions(mode, precision);
         const built = await build(candidateLib, mode, device, input, sc.src, sc.dst, {
-          denoiseModel, precision, model: artModel, ...gateOptions(),
+          ...options, ...gateOptions(),
         });
         const cand = built.preset;
         log(`  сборка кандидата: ${fmt(built.buildMs)} мс, самая долгая заморозка страницы ${fmt(built.maxGap)} мс`);
         const candRes = await measure(device, hasTimestamps, candidateLib, cand, iterations);
         let baseRes = null; let verdict = null;
 
-        // Режима может не быть у эталона (ArtCNN — только в форке).
-        if (withBaseline && baselineLib[mode]) {
-          const builtBase = await build(baselineLib, mode, device, input, sc.src, sc.dst, {});
+        // Режима может не быть у эталона (ArtCNN — только в форке). Эталон
+        // «Деталей» — ядро reference из той же сборки (перенос anion-dl).
+        const refLib = compact ? candidateLib : baselineLib;
+        const refOptions = compact ? { ...options, kernel: 'reference' } : {};
+        if (withBaseline && refLib[mode]) {
+          const builtBase = await build(refLib, mode, device, input, sc.src, sc.dst, refOptions);
           const base = builtBase.preset;
           log(`  сборка эталона: ${fmt(builtBase.buildMs)} мс, самая долгая заморозка страницы ${fmt(builtBase.maxGap)} мс`);
-          baseRes = await measure(device, hasTimestamps, baselineLib, base, iterations);
+          baseRes = await measure(device, hasTimestamps, refLib, base, iterations);
           const [a, b] = await Promise.all([
             readTexture(device, cand.getOutputTexture()),
             readTexture(device, base.getOutputTexture()),
@@ -432,7 +463,7 @@ async function run() {
           verdict = compare(a, b, $('ignoreEdge').checked);
           if (gpuErrors) verdict = { text: `GPU-ошибки (${gpuErrors}) — сверка недостоверна`, ok: false };
           if (sc === scenarios[0]) {
-            show(`${label} · эталон ${$('reference').value}`, b);
+            show(`${label} · эталон ${compact ? 'reference' : $('reference').value}`, b);
             show(`${label} · кандидат`, a);
             show(`${label} · |Δ| ×16`, a, b);
           }
@@ -535,7 +566,7 @@ async function runVideo() {
         const label = `${mode}${useF16 ? '/f16' : ''} · ${skipUnchanged ? `с воротами (порог ${threshold})` : 'без ворот'}`;
         log(`▶ ${label}`);
         const { preset } = await build(candidateLib, mode, device, input, src, dst, {
-          denoiseModel: $('denoiseModel').value, precision, model: $('artModel').value,
+          ...(await presetOptions(mode, precision)),
           skipUnchanged, unchangedThreshold: threshold,
         });
         // Сборка прогнала один кадр; счётчики ворот — с начала ролика.

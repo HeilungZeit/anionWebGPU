@@ -5,3 +5,4 @@ export * from './ModeAA';
 export * from './ModeBB';
 export * from './ModeCA';
 export * from './ModeArtCNN';
+export * from './ModeCompact';

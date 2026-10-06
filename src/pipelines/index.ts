@@ -5,4 +5,5 @@ export * from './helpers';
 export * from './restore';
 export * from './upscale';
 export * from './artcnn';
+export * from './compact';
 export * from './presets';

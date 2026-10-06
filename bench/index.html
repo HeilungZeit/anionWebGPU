@@ -29,7 +29,9 @@
     <legend>Источник</legend>
     <input type="file" id="file" accept="image/*,video/*">
     <label>время видео, с <input type="number" id="seek" value="30" min="0" step="1" style="width:5em"></label>
-    <span class="muted">Без файла — синтетический кадр с JPEG-артефактами.</span>
+    <span class="muted">Без файла — синтетический кадр с JPEG-артефактами.
+      «Детали» берут веса из <code>bench/models/janai-v2/</code> (копия <code>anion-dl/src/assets/upscale/</code>, в git не идёт);
+      эталон для них — ядро <code>reference</code> (как в anion-dl) из той же сборки.</span>
     <div>
       <label>длительность ролика, с <input type="number" id="duration" value="20" min="2" step="1" style="width:5em"></label>
       <label>к/с ролика <input type="number" id="fps" value="23.976" min="1" step="0.001" style="width:6em"></label>
@@ -47,6 +49,8 @@
       <label><input type="checkbox" name="mode" value="ModeCA" checked> ModeCA</label>
       <label><input type="checkbox" name="mode" value="ModeArtCNN"> ArtCNN
         <select id="artModel"><option>C4F16</option><option>C4F32</option></select></label>
+      <label><input type="checkbox" name="mode" value="ModeCompact"> Детали
+        <select id="compactKernel"><option>fast</option><option>fast-f32acc</option><option>reference</option></select></label>
       <label>модель Denoise (кандидат)
         <select id="denoiseModel"><option>VL</option><option>L</option><option>M</option></select></label>
       <label><input type="checkbox" id="f16"> shader-f16</label>
