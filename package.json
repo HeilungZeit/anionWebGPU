@@ -2,10 +2,31 @@
   "name": "anime4k-webgpu",
   "version": "1.0.0",
   "description": "Anime4K WebGPU port",
+  "type": "module",
   "main": "lib/index.js",
+  "module": "lib/index.js",
   "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./presets/*": {
+      "types": "./lib/pipelines/presets/*/index.d.ts",
+      "default": "./lib/pipelines/presets/*/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "typesVersions": {
+    "*": {
+      "presets/*": [
+        "lib/pipelines/presets/*/index.d.ts"
+      ]
+    }
+  },
+  "sideEffects": false,
   "scripts": {
-    "build": "webpack",
+    "build": "node scripts/build.mjs",
     "dev": "nodemon",
     "lint": "eslint . --ext .js,.ts"
   },
@@ -14,7 +35,10 @@
       "src"
     ],
     "ext": "ts,js,wgsl",
-    "exec": "npm run build"
+    "exec": "npm run build",
+    "ignore": [
+      "lib"
+    ]
   },
   "files": [
     "lib/",
@@ -46,7 +70,6 @@
     "@typescript-eslint/eslint-plugin": "^6.13.2",
     "@typescript-eslint/parser": "^6.13.2",
     "@webgpu/types": "^0.1.38",
-    "clean-webpack-plugin": "^4.0.0",
     "eslint": "^8.55.0",
     "eslint-config-airbnb": "^19.0.4",
     "eslint-config-airbnb-typescript": "^17.1.0",
@@ -56,9 +79,6 @@
     "eslint-plugin-react": "^7.33.2",
     "eslint-plugin-react-hooks": "^4.6.0",
     "nodemon": "^3.0.2",
-    "raw-loader": "^4.0.2",
-    "ts-loader": "^9.5.1",
-    "webpack": "^5.89.0",
-    "webpack-cli": "^5.1.4"
+    "typescript": "^5.3.3"
   }
 }
