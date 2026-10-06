@@ -25,4 +25,4 @@ git tag -a "v$VERSION" -m "v$VERSION"
 git checkout -q "$BRANCH"
 # Checkout ветки убирает отслеживаемый в релизе lib/ — собираем заново.
 npm run build >/dev/null
-echo "Тег v$VERSION готов: git push origin v$VERSION"
+echo "Тег v$VERSION готов: git push origin $BRANCH v$VERSION"
