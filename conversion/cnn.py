@@ -13,7 +13,7 @@
     выхода (bilinear(исходник) + residual).
 Математика та же, что в mpv; порядок сложения внутри слоя сохранён.
 
-Запуск (из anionWebGPU/):
+Запуск (из корня репозитория):
   python3 conversion/cnn.py <glsl> <out_dir> <ClassName>
 Все модели anion — conversion/generate.sh.
 """
@@ -292,8 +292,8 @@ def main() -> None:
         outputs.append(ids[layer.save])
     graph.append((n, [ids[t] for t in stage.inputs], outputs, stage.final))
 
-  # Пути считаются от корня форка: запускать из anionWebGPU/.
-  src = os.path.relpath(glsl, "..").replace(os.sep, "/")
+  # Пути считаются от корня репозитория: запускать из него.
+  src = os.path.relpath(glsl).replace(os.sep, "/")
   rel_helpers = os.path.relpath("src/pipelines/helpers/CNN", out_dir).replace(os.sep, "/")
   rel_interfaces = os.path.relpath("src/pipelines/interfaces", out_dir).replace(os.sep, "/")
   imports = "\n".join(f"import stage{n} from './shaders/stage{n}.wgsl';" for n, *_ in graph)

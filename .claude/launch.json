@@ -1,0 +1,6 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "bench", "runtimeExecutable": "npm", "runtimeArgs": ["run", "bench"], "port": 5179 }
+  ]
+}

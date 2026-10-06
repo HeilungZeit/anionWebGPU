@@ -1,5 +1,5 @@
 // Сгенерировано conversion/cnn.py — не править руками.
-// Источник: upstream-anime4k/glsl/Restore/Anime4K_Restore_CNN_M.glsl
+// Источник: conversion/glsl/anime4k/Anime4K_Restore_CNN_M.glsl
 // 8 слоёв mpv → 8 стадий.
 import stage0 from './shaders/stage0.wgsl';
 import stage1 from './shaders/stage1.wgsl';

@@ -1,5 +1,5 @@
 // Сгенерировано conversion/cnn.py — не править руками.
-// Источник: upstream-anime4k/glsl/Upscale+Denoise/Anime4K_Upscale_Denoise_CNN_x2_VL.glsl
+// Источник: conversion/glsl/anime4k/Anime4K_Upscale_Denoise_CNN_x2_VL.glsl
 // 17 слоёв mpv → 8 стадий.
 import stage0 from './shaders/stage0.wgsl';
 import stage1 from './shaders/stage1.wgsl';

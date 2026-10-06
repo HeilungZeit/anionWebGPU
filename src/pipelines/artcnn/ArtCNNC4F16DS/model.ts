@@ -1,5 +1,5 @@
 // Сгенерировано conversion/artcnn.py — не править руками.
-// Источник: upstream-artcnn/GLSL/ArtCNN_C4F16_DS.glsl
+// Источник: conversion/glsl/artcnn/ArtCNN_C4F16_DS.glsl
 // 8 шейдеров mpv → 7 стадий.
 import stage0 from './shaders/stage0.wgsl';
 import stage1 from './shaders/stage1.wgsl';

@@ -26,7 +26,8 @@
     "dev": "tsdown --watch",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint",
-    "check": "npm run typecheck && npm run lint"
+    "check": "npm run typecheck && npm run lint",
+    "bench": "node bench/serve.mjs"
   },
   "files": [
     "lib/",
@@ -35,7 +36,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Anime4KWebBoost/Anime4K-WebGPU.git"
+    "url": "git+https://github.com/HeilungZeit/anionWebGPU.git"
   },
   "keywords": [
     "upscale",
@@ -47,9 +48,9 @@
   "author": "Anime4KWebBoost Team",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/Anime4KWebBoost/Anime4K-WebGPU/issues"
+    "url": "https://github.com/HeilungZeit/anionWebGPU/issues"
   },
-  "homepage": "https://github.com/Anime4KWebBoost/Anime4K-WebGPU#readme",
+  "homepage": "https://github.com/HeilungZeit/anionWebGPU#readme",
   "peerDependencies": {
     "@webgpu/types": "^0.1.38"
   },

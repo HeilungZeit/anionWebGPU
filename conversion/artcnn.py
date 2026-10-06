@@ -16,7 +16,7 @@ bilinear(RGB) + (Y_сети − Y(bilinear(RGB))) — у BT.709 обратная
 в каждой строке, так что это замена Y при билинейной цветности.
 Паддинг — нули, как при обучении (Keras 'same').
 
-Запуск (из anionWebGPU/):
+Запуск (из корня репозитория):
   python3 conversion/artcnn.py <glsl> <out_dir> <ClassName>
 """
 import os
@@ -234,7 +234,7 @@ def main() -> None:
       ids.setdefault(name, len(ids))
     graph.append((n, [ids[t] for t in stage.inputs], [ids[t] for t in stage.outputs], stage.final))
 
-  src = os.path.relpath(glsl, "..").replace(os.sep, "/")
+  src = os.path.relpath(glsl).replace(os.sep, "/")
   rel_helpers = os.path.relpath("src/pipelines/helpers/CNN", out_dir).replace(os.sep, "/")
   rel_interfaces = os.path.relpath("src/pipelines/interfaces", out_dir).replace(os.sep, "/")
   imports = "\n".join(f"import stage{n} from './shaders/stage{n}.wgsl';" for n, *_ in graph)

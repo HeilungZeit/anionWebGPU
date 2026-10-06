@@ -56,3 +56,7 @@ coverage/
 # Testing
 *.test.ts
 *.spec.ts
+
+# Стенд: эталон 1.0.0 из npm и снимки сборок — локальные, в репозиторий не идут
+bench/baseline/
+bench/ref/

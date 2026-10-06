@@ -1,3 +1,12 @@
+# anionWebGPU
+
+> Форк [Anime4K-WebGPU](https://github.com/Anime4KWebBoost/Anime4K-WebGPU) для
+> плеера [anion](https://github.com/HeilungZeit): исправлен ClampHighlights,
+> проходы CNN слиты генератором (`conversion/`), добавлены лёгкие модели
+> Denoise M/L, ArtCNN и Downscale Catmull-Rom; ESM с точкой входа на пресет
+> (`anime4k-webgpu/presets/ModeC`). Что и зачем — [docs/PLAN.md](docs/PLAN.md).
+> Ниже — исходный README апстрима.
+
 # Anime4K-WebGPU
 
 University of Pennsylvania, CIS 565: GPU Programming and Architecture, Final Project
