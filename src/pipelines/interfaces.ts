@@ -54,7 +54,10 @@ export interface DownscalePipelineDescriptor {
 
 export interface ClampHighlightsPipelineDescriptor {
   device: GPUDevice;
+  /** Результат цепочки — его и зажимаем, в его разрешении. */
   inputTexture: GPUTexture;
+  /** Исходный кадр: по нему считается максимум яркости 5×5. */
+  statsTexture: GPUTexture;
   name?: string;
 }
 

@@ -19,14 +19,6 @@ export class ModeA implements Anime4KPipeline {
     this.pipelines = [];
     let currentTexture = inputTexture; // track most recent texture
 
-    // Clamp Highlights
-    const clampHighlights = new ClampHighlights({
-      device,
-      inputTexture: currentTexture,
-    });
-    this.pipelines.push(clampHighlights);
-    currentTexture = clampHighlights.getOutputTexture();
-
     // Restore
     const restore = new CNNVL({
       device,
@@ -95,6 +87,16 @@ export class ModeA implements Anime4KPipeline {
       curWidth *= 2;
       curHeight *= 2;
     }
+
+    // Clamp Highlights — последним, как HOOK PREKERNEL в mpv: статистика по
+    // исходнику, зажим в разрешении выхода.
+    const clampHighlights = new ClampHighlights({
+      device,
+      inputTexture: currentTexture,
+      statsTexture: inputTexture,
+    });
+    this.pipelines.push(clampHighlights);
+    currentTexture = clampHighlights.getOutputTexture();
 
     this.outputTexture = currentTexture;
   }
