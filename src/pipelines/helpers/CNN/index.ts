@@ -119,7 +119,9 @@ export class CNN implements Anime4KPipeline {
           compute: {
             module: device.createShaderModule({
               label: `${name}: stage ${n}`,
-              code: PRELUDE[this.precision] + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
+              // enable-директивы — до любых объявлений, поэтому subgroups первым.
+              code: (stage.subgroups ? 'enable subgroups;\n' : '')
+                + PRELUDE[this.precision] + (final ? DeRingEpilogue.wgsl : '') + stage.wgsl,
             }),
             entryPoint: 'computeMain',
             constants: final ? epilogue.constants : {},
