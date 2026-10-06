@@ -11,10 +11,10 @@ export interface CNNPipelineDescriptor {
   precision?: CNNPrecision;
 }
 
-// Шейдеры генератора пишут типы через псевдонимы T4/M4.
+// Шейдеры генераторов пишут типы через псевдонимы T4/M4/A4/S1.
 const PRELUDE = {
-  f32: 'alias T4 = vec4f;\nalias M4 = mat4x4f;\nalias A4 = vec4f;\n',
-  f16: 'enable f16;\nalias T4 = vec4h;\nalias M4 = mat4x4h;\nalias A4 = vec4h;\n',
+  f32: 'alias T4 = vec4f;\nalias M4 = mat4x4f;\nalias A4 = vec4f;\nalias S1 = f32;\n',
+  f16: 'enable f16;\nalias T4 = vec4h;\nalias M4 = mat4x4h;\nalias A4 = vec4h;\nalias S1 = f16;\n',
 };
 
 interface CompiledStage {

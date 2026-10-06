@@ -93,3 +93,9 @@ export interface ModeCPresetPipelineDescriptor extends Anime4KPresetPipelineDesc
   /** Точность CNN-звеньев, по умолчанию f32. */
   precision?: CNNPrecision;
 }
+
+export interface ModeArtCNNPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
+  /** C4F16 (~12k параметров, по умолчанию) или C4F32 (~48k). */
+  model?: 'C4F16' | 'C4F32';
+  precision?: CNNPrecision;
+}
