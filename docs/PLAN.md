@@ -124,9 +124,9 @@ npm run bench
       `"anime4k-webgpu": "file:../anionWebGPU"`. Для деплоя —
       git-зависимость `github:HeilungZeit/anionWebGPU#<тег>` со скриптом
       `prepare: npm run build` (решение от 2026-10-06).
-      ⚠ anion ставит пакеты через bun, а bun не запускает lifecycle-скрипты
-      зависимостей без `trustedDependencies`. Надёжнее, чтобы тег указывал на
-      коммит с уже собранным `lib/`; тогда `prepare` при установке не нужен.
+      Решение: bun не запускает `prepare` у зависимостей, поэтому тег
+      указывает на коммит с уже собранным `lib/` (`scripts/release.sh`); сама
+      ветка `anion` `lib/` не содержит. Первый релиз — `v1.1.0-anion.1`.
 
 ### Э1. ClampHighlights в конец цепочки — качество бесплатно
 
