@@ -4,7 +4,7 @@
 # установке ничего не собирается (bun не запускает prepare у зависимостей).
 #
 #   scripts/release.sh 1.1.0-anion.2   # version в package.json должна совпадать
-#   git push origin v1.1.0-anion.2
+#   git push origin main v1.1.0-anion.2
 #
 # В anion: "anime4k-webgpu": "github:HeilungZeit/anionWebGPU#v1.1.0-anion.2"
 set -e

@@ -3,8 +3,11 @@
 План, этапы и журнал замеров — [docs/PLAN.md](docs/PLAN.md). Начинать с него и
 отмечать чекбоксы там же.
 
-- Ветка `anion`, remote `origin` — https://github.com/HeilungZeit/anionWebGPU,
-  `upstream` — оригинал (Anime4KWebBoost/Anime4K-WebGPU).
+- Работаем в `main`, remote `origin` — https://github.com/HeilungZeit/anionWebGPU
+  (самостоятельный репозиторий, отвязан от форк-сети); `upstream` — оригинал
+  (Anime4KWebBoost/Anime4K-WebGPU), только для сверки.
+- Релиз для anion — `scripts/release.sh <версия>` и `git push origin main v<версия>`:
+  тег указывает на коммит с собранным `lib/`, в `main` его нет.
 - Node ≥ 24. `npm run build` — tsdown → `lib/`; `npm run check` — TypeScript 7
   и oxlint.
 - Шейдеры CNN не править руками: они генерируются `conversion/cnn.py`

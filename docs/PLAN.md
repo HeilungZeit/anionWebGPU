@@ -16,7 +16,7 @@
 
 | Путь | Что это |
 | --- | --- |
-| `src/` | Код библиотеки. Ветка `anion`, remote `upstream` — оригинал. Node ≥ 24. `npm run build` (tsdown) → `lib/`, `npm run check` — TypeScript 7 + oxlint. |
+| `src/` | Код библиотеки. Ветка `main` (до 2026-10-06 — `anion`), remote `upstream` — оригинал. Node ≥ 24. `npm run build` (tsdown) → `lib/`, `npm run check` — TypeScript 7 + oxlint. |
 | `conversion/` | Генераторы шейдеров (`cnn.py`, `artcnn.py`, `generate.sh`) и их исходники в `conversion/glsl/` (Anime4K, ArtCNN — копии, MIT). |
 | `bench/` | Стенд: время по звеньям пресета и попиксельная сверка с эталоном. |
 | `bench/baseline/`, `bench/ref/` | Эталоны: бандл 1.0.0 из npm и снимки `lib/` после этапов. Локальные, в `.gitignore`. |
@@ -126,7 +126,7 @@ npm run bench
       `prepare: npm run build` (решение от 2026-10-06).
       Решение: bun не запускает `prepare` у зависимостей, поэтому тег
       указывает на коммит с уже собранным `lib/` (`scripts/release.sh`); сама
-      ветка `anion` `lib/` не содержит. Первый релиз — `v1.1.0-anion.1`.
+      ветка `main` `lib/` не содержит. Первый релиз — `v1.1.0-anion.1`.
 
 ### Э1. ClampHighlights в конец цепочки — качество бесплатно
 
