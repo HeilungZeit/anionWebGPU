@@ -179,27 +179,27 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
     let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
     let y = clamp(vec4f(r0)[0], 0.0, 1.0);
     let rgb = base.rgb + (y - dot(base.rgb, vec3f(0.2126, 0.7152, 0.0722)));
-    textureStore(tex_out, o, vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0));
+    textureStore(tex_out, o, deRing(vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0), o, out_dim));
   }
   {
     let o = p * 2 + vec2i(1, 0);
     let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
     let y = clamp(vec4f(r0)[1], 0.0, 1.0);
     let rgb = base.rgb + (y - dot(base.rgb, vec3f(0.2126, 0.7152, 0.0722)));
-    textureStore(tex_out, o, vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0));
+    textureStore(tex_out, o, deRing(vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0), o, out_dim));
   }
   {
     let o = p * 2 + vec2i(0, 1);
     let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
     let y = clamp(vec4f(r0)[2], 0.0, 1.0);
     let rgb = base.rgb + (y - dot(base.rgb, vec3f(0.2126, 0.7152, 0.0722)));
-    textureStore(tex_out, o, vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0));
+    textureStore(tex_out, o, deRing(vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0), o, out_dim));
   }
   {
     let o = p * 2 + vec2i(1, 1);
     let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);
     let y = clamp(vec4f(r0)[3], 0.0, 1.0);
     let rgb = base.rgb + (y - dot(base.rgb, vec3f(0.2126, 0.7152, 0.0722)));
-    textureStore(tex_out, o, vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0));
+    textureStore(tex_out, o, deRing(vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0), o, out_dim));
   }
 }

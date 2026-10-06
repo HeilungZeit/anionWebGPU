@@ -5,6 +5,7 @@
 // алиасинг на тонких линиях.
 override FILTER: u32 = 1u; // 0 — билинейно, 1 — Catmull-Rom
 override AXIS: u32 = 0u; // для Catmull-Rom: 0 — проход по x, 1 — по y
+// deRing() и DERING — эпилог Clamp Highlights (ClampHighlights/shaders/dering.wgsl).
 
 @group(0) @binding(0) var tex_in: texture_2d<f32>;
 @group(0) @binding(1) var lin: sampler;
@@ -30,7 +31,8 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
   let dim_in = vec2f(textureDimensions(tex_in));
   let uv = (vec2f(gid.xy) + 0.5) / vec2f(dim_out);
   if (FILTER == 0u) {
-    textureStore(tex_out, gid.xy, textureSampleLevel(tex_in, lin, uv, 0.0));
+    let color = textureSampleLevel(tex_in, lin, uv, 0.0);
+    textureStore(tex_out, gid.xy, deRing(color, vec2i(gid.xy), vec2f(dim_out)));
     return;
   }
 
@@ -54,5 +56,5 @@ fn computeMain(@builtin(global_invocation_id) gid: vec3u) {
     sum += w * textureLoad(tex_in, clamp(p, vec2i(0), edge), 0);
     weight += w;
   }
-  textureStore(tex_out, gid.xy, sum / weight);
+  textureStore(tex_out, gid.xy, deRing(sum / weight, vec2i(gid.xy), vec2f(dim_out)));
 }

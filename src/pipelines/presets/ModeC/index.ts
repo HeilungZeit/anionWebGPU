@@ -1,8 +1,9 @@
-import { ClampHighlights, Downscale } from '../../helpers';
+import { ClampStats, Downscale } from '../../helpers';
 import { Anime4KPipeline, ModeCPresetPipelineDescriptor } from '../../interfaces';
 import {
   CNNx2M, DenoiseCNNx2L, DenoiseCNNx2M, DenoiseCNNx2VL,
 } from '../../upscale';
+import { planModeC } from '../chain';
 
 export class ModeC implements Anime4KPipeline {
   pipelines: Anime4KPipeline[];
@@ -29,84 +30,62 @@ export class ModeC implements Anime4KPipeline {
     denoiseModel = 'VL',
     precision = 'f32',
   }: ModeCPresetPipelineDescriptor) {
-    let curWidth = nativeDimensions.width;
-    let curHeight = nativeDimensions.height;
     this.pipelines = [];
-    let currentTexture = inputTexture; // track most recent texture
+    const chain = planModeC(nativeDimensions, targetDimensions);
+    let currentTexture = inputTexture;
 
-    // Upscale 1
-    if (targetDimensions.width > 1.2 * curWidth
-        && targetDimensions.height > 1.2 * curHeight) {
-      const Denoise = { M: DenoiseCNNx2M, L: DenoiseCNNx2L, VL: DenoiseCNNx2VL }[denoiseModel];
-      const upscale1 = new Denoise({
-        device,
-        inputTexture: currentTexture,
-        precision,
-      });
-      this.pipelines.push(upscale1);
-      currentTexture = upscale1.getOutputTexture();
-      curWidth *= 2;
-      curHeight *= 2;
+    // Без увеличения цепочка пуста: зажим по статистике того же кадра — тождество.
+    if (!chain.upscale1) {
+      this.outputTexture = currentTexture;
+      return;
     }
 
-    // Auto Downscale x2
-    if (targetDimensions.width > 1.2 * nativeDimensions.width
-        && targetDimensions.height > 1.2 * nativeDimensions.height
-        && targetDimensions.width < 2.0 * nativeDimensions.width
-        && targetDimensions.height < 2.0 * nativeDimensions.height) {
-      const autoDownscalex2 = new Downscale({
-        device,
-        inputTexture: currentTexture,
-        targetDimensions,
+    // Clamp Highlights: статистика по исходнику, зажим (deRing) — в последнем
+    // звене, в разрешении выхода, как HOOK PREKERNEL в mpv.
+    const stats = new ClampStats({ device, inputTexture });
+    this.pipelines.push(stats);
+    let last = 'upscale1';
+    if (chain.downscale2) last = 'downscale2';
+    if (chain.downscale4) last = 'downscale4';
+    if (chain.upscale2) last = 'upscale2';
+    const deRing = (step: string) => (step === last ? stats.getOutputTexture() : undefined);
+
+    const Denoise = { M: DenoiseCNNx2M, L: DenoiseCNNx2L, VL: DenoiseCNNx2VL }[denoiseModel];
+    const upscale1 = new Denoise({
+      device, inputTexture: currentTexture, precision, deRing: deRing('upscale1'),
+    });
+    this.pipelines.push(upscale1);
+    currentTexture = upscale1.getOutputTexture();
+
+    if (chain.downscale2) {
+      const downscale = new Downscale({
+        device, inputTexture: currentTexture, targetDimensions, deRing: deRing('downscale2'),
       });
-      this.pipelines.push(autoDownscalex2);
-      currentTexture = autoDownscalex2.getOutputTexture();
-      curWidth = targetDimensions.width;
-      curHeight = targetDimensions.height;
+      this.pipelines.push(downscale);
+      currentTexture = downscale.getOutputTexture();
     }
 
-    // Auto Downscale x4
-    if (targetDimensions.width > 2.4 * nativeDimensions.width
-        && targetDimensions.height > 2.4 * nativeDimensions.height
-        && targetDimensions.width < 4.0 * nativeDimensions.width
-        && targetDimensions.height < 4.0 * nativeDimensions.height) {
-      const autoDownscalex4 = new Downscale({
+    if (chain.downscale4) {
+      const downscale = new Downscale({
         device,
         inputTexture: currentTexture,
         targetDimensions: {
           width: Math.ceil(targetDimensions.width / 2),
           height: Math.ceil(targetDimensions.height / 2),
         },
+        deRing: deRing('downscale4'),
       });
-      this.pipelines.push(autoDownscalex4);
-      currentTexture = autoDownscalex4.getOutputTexture();
-      curWidth = Math.ceil(targetDimensions.width / 2);
-      curHeight = Math.ceil(targetDimensions.height / 2);
+      this.pipelines.push(downscale);
+      currentTexture = downscale.getOutputTexture();
     }
 
-    // Upscale 2
-    if (targetDimensions.width > 1.2 * curWidth
-        && targetDimensions.height > 1.2 * curHeight) {
+    if (chain.upscale2) {
       const upscale2 = new CNNx2M({
-        device,
-        inputTexture: currentTexture,
-        precision,
+        device, inputTexture: currentTexture, precision, deRing: deRing('upscale2'),
       });
       this.pipelines.push(upscale2);
       currentTexture = upscale2.getOutputTexture();
-      curWidth *= 2;
-      curHeight *= 2;
     }
-
-    // Clamp Highlights — последним, как HOOK PREKERNEL в mpv: статистика по
-    // исходнику, зажим в разрешении выхода.
-    const clampHighlights = new ClampHighlights({
-      device,
-      inputTexture: currentTexture,
-      statsTexture: inputTexture,
-    });
-    this.pipelines.push(clampHighlights);
-    currentTexture = clampHighlights.getOutputTexture();
 
     this.outputTexture = currentTexture;
   }
@@ -116,9 +95,7 @@ export class ModeC implements Anime4KPipeline {
   }
 
   pass(encoder: GPUCommandEncoder): void {
-    for (let i = 0; i < this.pipelines.length; i += 1) {
-      this.pipelines[i].pass(encoder);
-    }
+    this.pipelines.forEach((pipeline) => pipeline.pass(encoder));
   }
 
   getOutputTexture(): GPUTexture {

@@ -148,6 +148,8 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
   emit(f"// {stage.layers[0].desc}")
   emit(f"// Слои: {', '.join(l.save for l in stage.layers)}. Сгенерировано conversion/cnn.py — не править.")
   emit("// Точность — псевдонимы T4/M4/A4, их объявляет helpers/CNN (f32 или f16).")
+  if stage.final:
+    emit("// deRing() — эпилог Clamp Highlights, его добавляет helpers/CNN.")
   binding = 0
   for i, name in enumerate(stage.inputs):
     emit(f"@group(0) @binding({binding}) var tex_{i}: texture_2d<f32>; // {name}")
@@ -255,11 +257,11 @@ def wgsl_stage(stage: Stage, d2s: DepthToSpace | None, scale: int) -> str:
           emit("    {")
           emit(f"      let o = q{k} * {scale} + vec2i({sx}, {sy});")
           emit("      let base = textureSampleLevel(tex_main, main_sampler, (vec2f(o) + 0.5) / out_dim, 0.0);")
-          emit(f"      textureStore(tex_out, o, clamp(base + vec4f({comps}), vec4f(0.0), vec4f(1.0)));")
+          emit(f"      textureStore(tex_out, o, deRing(clamp(base + vec4f({comps}), vec4f(0.0), vec4f(1.0)), o, out_dim));")
           emit("    }")
     else:
       emit(f"    let base = textureLoad(tex_main, q{k}, 0);")
-      emit(f"    textureStore(tex_out, q{k}, clamp(base + {res}0_{k}, vec4f(0.0), vec4f(1.0)));")
+      emit(f"    textureStore(tex_out, q{k}, deRing(clamp(base + {res}0_{k}, vec4f(0.0), vec4f(1.0)), q{k}, vec2f(dim)));")
     emit("  }")
   emit("}")
   return "\n".join(out) + "\n"
@@ -326,9 +328,11 @@ import {{ CNN }} from '{rel_helpers}';
 import model from './model';
 
 export class {class_name} extends CNN {{
-  constructor({{ device, inputTexture, precision }}: CNNModelPipelineDescriptor) {{
+  constructor({{
+    device, inputTexture, precision, deRing,
+  }}: CNNModelPipelineDescriptor) {{
     super({{
-      device, inputTexture, model, name: '{class_name}', precision,
+      device, inputTexture, model, name: '{class_name}', precision, deRing,
     }});
   }}
 }}
