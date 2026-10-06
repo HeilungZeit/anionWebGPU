@@ -147,7 +147,6 @@ export class BilateralMean implements Anime4KPipeline {
     return this.texture;
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   updateParam(param: string, value): void {
     if (param !== 'strength' && param !== 'strength2') {
       throw new Error(`No param name as ${param}`);

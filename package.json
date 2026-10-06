@@ -17,28 +17,16 @@
     },
     "./package.json": "./package.json"
   },
-  "typesVersions": {
-    "*": {
-      "presets/*": [
-        "lib/pipelines/presets/*/index.d.ts"
-      ]
-    }
-  },
   "sideEffects": false,
-  "scripts": {
-    "build": "node scripts/build.mjs",
-    "dev": "nodemon",
-    "lint": "eslint . --ext .js,.ts"
+  "engines": {
+    "node": ">=24"
   },
-  "nodemonConfig": {
-    "watch": [
-      "src"
-    ],
-    "ext": "ts,js,wgsl",
-    "exec": "npm run build",
-    "ignore": [
-      "lib"
-    ]
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "oxlint",
+    "check": "npm run typecheck && npm run lint"
   },
   "files": [
     "lib/",
@@ -66,19 +54,9 @@
     "@webgpu/types": "^0.1.38"
   },
   "devDependencies": {
-    "@types/node": "^20",
-    "@typescript-eslint/eslint-plugin": "^6.13.2",
-    "@typescript-eslint/parser": "^6.13.2",
-    "@webgpu/types": "^0.1.38",
-    "eslint": "^8.55.0",
-    "eslint-config-airbnb": "^19.0.4",
-    "eslint-config-airbnb-typescript": "^17.1.0",
-    "eslint-import-resolver-typescript": "^3.6.1",
-    "eslint-plugin-import": "^2.29.0",
-    "eslint-plugin-jsx-a11y": "^6.8.0",
-    "eslint-plugin-react": "^7.33.2",
-    "eslint-plugin-react-hooks": "^4.6.0",
-    "nodemon": "^3.0.2",
-    "typescript": "^5.3.3"
+    "@webgpu/types": "^0.1.74",
+    "oxlint": "^1.87.0",
+    "tsdown": "^0.23.0",
+    "typescript": "^7.0.2"
   }
 }

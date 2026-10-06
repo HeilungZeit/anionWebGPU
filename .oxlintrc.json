@@ -1,0 +1,17 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn"
+  },
+  "rules": {
+    "eqeqeq": "error",
+    "no-var": "error",
+    "prefer-const": "error",
+    "no-unused-vars": ["error", { "args": "none" }],
+    "import/no-cycle": "error",
+    "typescript/consistent-type-imports": "off"
+  },
+  "ignorePatterns": ["lib/**", "examples/**", "conversion/**"]
+}

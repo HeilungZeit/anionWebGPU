@@ -1,6 +1,6 @@
 import { ClampHighlights, Downscale } from '../../helpers';
 import { Anime4KPipeline, Anime4KPresetPipelineDescriptor } from '../../interfaces';
-import { CNNSoftVL, CNNVL } from '../../restore';
+import { CNNSoftVL } from '../../restore';
 import { CNNx2M, CNNx2VL } from '../../upscale';
 
 export class ModeB implements Anime4KPipeline {

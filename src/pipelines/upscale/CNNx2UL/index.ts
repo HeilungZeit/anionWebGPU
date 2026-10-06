@@ -116,7 +116,6 @@ export class CNNx2UL implements Anime4KPipeline {
     }));
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   updateParam(param: string, value: any): void {
     throw new Error(`${this.constructor.name} has no param`);
   }
