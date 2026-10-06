@@ -118,7 +118,8 @@ def plan(convs: list[Conv], d2s: DepthToSpace | None) -> list[Stage]:
       stages.append(Stage([conv], inputs))
   last = stages[-1]
   if d2s:
-    assert last.layers[0].kernel == 1 and [l.save for l in last.layers] == sorted(set(d2s.channels), key=d2s.channels.index), \
+    # Ядро любое: у M/VL последние слои 1×1, у L — 3×3.
+    assert [l.save for l in last.layers] == sorted(set(d2s.channels), key=d2s.channels.index), \
       "последняя стадия должна быть ровно слоями для Depth-to-Space"
     last.final = True
   else:

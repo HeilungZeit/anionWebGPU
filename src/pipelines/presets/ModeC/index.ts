@@ -1,7 +1,8 @@
 import { ClampHighlights, Downscale } from '../../helpers';
-import { Anime4KPipeline, Anime4KPresetPipelineDescriptor } from '../../interfaces';
-import { CNNVL } from '../../restore';
-import { CNNx2M, CNNx2VL, DenoiseCNNx2VL } from '../../upscale';
+import { Anime4KPipeline, ModeCPresetPipelineDescriptor } from '../../interfaces';
+import {
+  CNNx2M, DenoiseCNNx2L, DenoiseCNNx2M, DenoiseCNNx2VL,
+} from '../../upscale';
 
 export class ModeC implements Anime4KPipeline {
   pipelines: Anime4KPipeline[];
@@ -17,13 +18,15 @@ export class ModeC implements Anime4KPipeline {
    * @param {GPUTexture} options.inputTexture - The input texture to process.
    * @param {Dimensions} options.nativeDimensions - The original dimensions of the input texture.
    * @param {Dimensions} options.targetDimensions - The target dimension for the output texture.
+   * @param {DenoiseModelSize} [options.denoiseModel='VL'] - Size of the Upscale-Denoise model.
    */
   constructor({
     device,
     inputTexture,
     nativeDimensions,
     targetDimensions,
-  }: Anime4KPresetPipelineDescriptor) {
+    denoiseModel = 'VL',
+  }: ModeCPresetPipelineDescriptor) {
     let curWidth = nativeDimensions.width;
     let curHeight = nativeDimensions.height;
     this.pipelines = [];
@@ -32,7 +35,8 @@ export class ModeC implements Anime4KPipeline {
     // Upscale 1
     if (targetDimensions.width > 1.2 * curWidth
         && targetDimensions.height > 1.2 * curHeight) {
-      const upscale1 = new DenoiseCNNx2VL({
+      const Denoise = { M: DenoiseCNNx2M, L: DenoiseCNNx2L, VL: DenoiseCNNx2VL }[denoiseModel];
+      const upscale1 = new Denoise({
         device,
         inputTexture: currentTexture,
       });

@@ -69,3 +69,11 @@ export interface Anime4KPresetPipelineDescriptor extends Anime4KPipelineDescript
   nativeDimensions: { width: number; height: number };
   targetDimensions: { width: number; height: number };
 }
+
+/** Размер модели Upscale-Denoise: M ≈ в 4 раза дешевле VL, L — посередине. */
+export type DenoiseModelSize = 'M' | 'L' | 'VL';
+
+export interface ModeCPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
+  /** По умолчанию VL — как в Anime4K Mode C. */
+  denoiseModel?: DenoiseModelSize;
+}

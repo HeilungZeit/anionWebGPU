@@ -5,3 +5,5 @@ G=../upstream-anime4k/glsl
 python3 conversion/cnn.py "$G/Upscale+Denoise/Anime4K_Upscale_Denoise_CNN_x2_VL.glsl" src/pipelines/upscale/DenoiseCNNx2VL DenoiseCNNx2VL
 python3 conversion/cnn.py "$G/Upscale/Anime4K_Upscale_CNN_x2_M.glsl" src/pipelines/upscale/CNNx2M CNNx2M
 python3 conversion/cnn.py "$G/Restore/Anime4K_Restore_CNN_M.glsl" src/pipelines/restore/CNNM CNNM
+python3 conversion/cnn.py "$G/Upscale+Denoise/Anime4K_Upscale_Denoise_CNN_x2_M.glsl" src/pipelines/upscale/DenoiseCNNx2M DenoiseCNNx2M
+python3 conversion/cnn.py "$G/Upscale+Denoise/Anime4K_Upscale_Denoise_CNN_x2_L.glsl" src/pipelines/upscale/DenoiseCNNx2L DenoiseCNNx2L
