@@ -380,7 +380,8 @@ SRVGGNetCompact 24nf/8nc ×2, ~44.7k MAC на пиксель источника.
 - [ ] Встройка в anion: режим `compact` «Детали» в `upscale.ts`, веса в
       `public/upscale/janai-v2/` с `LICENSE.txt` (атрибуция и CC BY-NC-SA),
       устройство с `shader-f16`, `skipUnchanged: true`. Релиз
-      `v1.1.0-anion.5`. Готово, когда проверено владельцем на живой серии.
+      `v1.1.0-anion.5` (anion `808d1ce`). Готово, когда проверено владельцем
+      на живой серии.
 - [ ] Если в Chrome не хватит запаса: Winograd F(2×2, 3×3) — в 2.25 раза
       меньше умножений, или `chromium-experimental-subgroup-matrix` (матричные
       инструкции Apple, за флагом).
