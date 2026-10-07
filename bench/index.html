@@ -51,6 +51,11 @@
         <select id="artModel"><option>C4F16</option><option>C4F32</option></select></label>
       <label><input type="checkbox" name="mode" value="ModeCompact"> Детали
         <select id="compactKernel"><option>fast</option><option>fast-f32acc</option><option>reference</option></select></label>
+      <label>веса «Деталей»
+        <select id="compactWeights">
+          <option value="janai-v2">JaNai V2 (как в anion)</option>
+          <option value="kodik-v1">Kodik v1 (дообученная, Э11)</option>
+        </select></label>
       <label>модель Denoise (кандидат)
         <select id="denoiseModel"><option>VL</option><option>L</option><option>M</option></select></label>
       <label><input type="checkbox" id="f16"> shader-f16</label>

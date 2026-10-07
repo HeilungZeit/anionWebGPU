@@ -65,3 +65,8 @@ bench/models/
 
 # Лаборатория вариантов ядра «Деталей» — локальная
 bench/lab/
+
+# Обучение своей модели: окружение и данные (APISR — без распространения, Kodik) — локальные
+training/.venv/
+training/data/
+training/runs/

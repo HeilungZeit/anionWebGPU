@@ -72,17 +72,26 @@ async function initDevice() {
 
 // ---------- веса «Деталей» ----------
 
-let compactModel = null;
+const compactModels = new Map();
 
-/** Веса AnimeJaNai V2 SuperUltraCompact из bench/models (локальные). */
-async function loadCompactModel() {
-  if (compactModel) return compactModel;
+/** Эталон «Деталей» — всегда эти веса: с другими сверка показывает разницу моделей. */
+const COMPACT_REFERENCE_WEIGHTS = 'janai-v2';
+
+/**
+ * Веса SuperUltraCompact из bench/models/<name> (локальные): `janai-v2` —
+ * AnimeJaNai V2 как в anion, `kodik-v1` — она же, дообученная под порчу
+ * Kodik (Э11, `training/`).
+ */
+async function loadCompactModel(name) {
+  if (compactModels.has(name)) return compactModels.get(name);
+  const file = (f) => `./models/${name}/${f}`;
   const [meta, weights] = await Promise.all([
-    fetch('./models/janai-v2/model.json').then((r) => { if (!r.ok) throw new Error('нет bench/models/janai-v2/model.json'); return r.json(); }),
-    fetch('./models/janai-v2/weights.bin').then((r) => { if (!r.ok) throw new Error('нет bench/models/janai-v2/weights.bin'); return r.arrayBuffer(); }),
+    fetch(file('model.json')).then((r) => { if (!r.ok) throw new Error(`нет bench/models/${name}/model.json`); return r.json(); }),
+    fetch(file('weights.bin')).then((r) => { if (!r.ok) throw new Error(`нет bench/models/${name}/weights.bin`); return r.arrayBuffer(); }),
   ]);
-  compactModel = { meta, weights };
-  return compactModel;
+  const model = { meta, weights };
+  compactModels.set(name, model);
+  return model;
 }
 
 /** Опции пресета под режим: веса и ядро «Деталей», модели остальных. */
@@ -91,7 +100,7 @@ async function presetOptions(mode, precision) {
     denoiseModel: $('denoiseModel').value, precision, model: $('artModel').value,
   };
   if (mode !== 'ModeCompact') return common;
-  return { ...common, model: await loadCompactModel(), kernel: $('compactKernel').value };
+  return { ...common, model: await loadCompactModel($('compactWeights').value), kernel: $('compactKernel').value };
 }
 
 // ---------- источник ----------
@@ -430,7 +439,10 @@ async function run() {
       const input = await uploadTexture(device, bitmap, sc.src);
       for (const mode of modes) {
         const compact = mode === 'ModeCompact';
-        const size = mode === 'ModeArtCNN' ? artModel : compact ? $('compactKernel').value : (denoiseModel !== 'VL' && denoiseModel) || '';
+        const weights = $('compactWeights').value;
+        const size = mode === 'ModeArtCNN' ? artModel
+          : compact ? [$('compactKernel').value, weights !== COMPACT_REFERENCE_WEIGHTS ? weights : ''].filter(Boolean).join('/')
+          : (denoiseModel !== 'VL' && denoiseModel) || '';
         const variant = [size, useF16 && !compact ? 'f16' : ''].filter(Boolean).join('/');
         const label = `${mode}${variant ? `/${variant}` : ''} ${sc.src.join('×')}→${sc.dst.join('×')}`;
         log(`▶ ${label}`);
@@ -448,9 +460,12 @@ async function run() {
         let baseRes = null; let verdict = null;
 
         // Режима может не быть у эталона (ArtCNN — только в форке). Эталон
-        // «Деталей» — ядро reference из той же сборки (перенос anion-dl).
+        // «Деталей» — ядро reference из той же сборки (перенос anion-dl) с
+        // весами JaNai V2: при других весах сверка — это A/B моделей.
         const refLib = compact ? candidateLib : baselineLib;
-        const refOptions = compact ? { ...options, kernel: 'reference' } : {};
+        const refOptions = compact
+          ? { ...options, kernel: 'reference', model: await loadCompactModel(COMPACT_REFERENCE_WEIGHTS) }
+          : {};
         if (withBaseline && refLib[mode]) {
           const builtBase = await build(refLib, mode, device, input, sc.src, sc.dst, refOptions);
           const base = builtBase.preset;
@@ -463,7 +478,7 @@ async function run() {
           verdict = compare(a, b, $('ignoreEdge').checked);
           if (gpuErrors) verdict = { text: `GPU-ошибки (${gpuErrors}) — сверка недостоверна`, ok: false };
           if (sc === scenarios[0]) {
-            show(`${label} · эталон ${compact ? 'reference' : $('reference').value}`, b);
+            show(`${label} · эталон ${compact ? `reference/${COMPACT_REFERENCE_WEIGHTS}` : $('reference').value}`, b);
             show(`${label} · кандидат`, a);
             show(`${label} · |Δ| ×16`, a, b);
           }
