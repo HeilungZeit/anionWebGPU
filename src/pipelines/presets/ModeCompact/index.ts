@@ -14,6 +14,12 @@ export interface ModeCompactPresetPipelineDescriptor extends Anime4KPresetPipeli
   skipUnchanged?: boolean;
   /** Порог повтора в уровнях 8 бит, по умолчанию 0 — только точные повторы. */
   unchangedThreshold?: number;
+  /**
+   * Цветность выхода: σ сглаживания цветности кадра, по умолчанию 2 — от
+   * сети берётся только яркость (цветовые блоки сжатия сеть рисует пятнами).
+   * 0 — цветность сети, как до Э12. См. CompactPipelineDescriptor.
+   */
+  chromaSigma?: number;
 }
 
 /**
@@ -33,7 +39,7 @@ export class ModeCompact implements Anime4KPipeline {
 
   constructor({
     device, inputTexture, nativeDimensions, targetDimensions, model, kernel,
-    skipUnchanged = false, unchangedThreshold = 0,
+    skipUnchanged = false, unchangedThreshold = 0, chromaSigma = 2,
   }: ModeCompactPresetPipelineDescriptor) {
     let currentTexture = inputTexture;
     if (targetDimensions.width > 1.2 * nativeDimensions.width
@@ -46,7 +52,7 @@ export class ModeCompact implements Anime4KPipeline {
       this.gate = gate;
 
       const upscale = new CompactSR({
-        device, inputTexture: currentTexture, model, kernel, gate,
+        device, inputTexture: currentTexture, model, kernel, gate, chromaSigma,
       });
       this.pipelines.push(upscale);
       currentTexture = upscale.getOutputTexture();

@@ -134,6 +134,8 @@ export interface LayerShaderOptions {
   first: boolean;
   /** Последний слой: pixelshuffle + skip ближайшим соседом в текстуру. */
   tailScale?: number;
+  /** Последний слой: цветность — из сглаженной цветности кадра, не от сети. */
+  chroma?: boolean;
 }
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
@@ -173,8 +175,11 @@ ${fill}
  * skip ближайшим соседом — в srvgg_arch.py стоит `mode='nearest'`. Сумма — в
  * f16, как в anion-dl; выход зажат в 0..1 (там зажимал вывод в rgba8unorm).
  * `at(o)` — выражение f16 для выходного канала o.
+ *
+ * С `chroma` от сети берётся только яркость, цветность — из сглаженной
+ * цветности кадра (`chromaShader`), билинейно: см. CompactPipelineDescriptor.
  */
-function storeTail(scale: number, at: (o: number) => string, indent: string): string {
+function storeTail(scale: number, at: (o: number) => string, indent: string, chroma: boolean): string {
   const lines = [
     'let c = textureLoad(orig, vec2i(i32(ox), i32(oy)), 0);',
     'let base = V(f16(c.r), f16(c.g), f16(c.b), 0.0h);',
@@ -182,15 +187,89 @@ function storeTail(scale: number, at: (o: number) => string, indent: string): st
   for (let rh = 0; rh < scale; rh += 1) {
     for (let rw = 0; rw < scale; rw += 1) {
       const ch = (colour: number) => at(colour * scale * scale + rh * scale + rw);
-      lines.push(`textureStore(dst, vec2u(ox * ${scale}u + ${rw}u, oy * ${scale}u + ${rh}u),`
-        + ` vec4f(saturate(vec3f(vec3h(${ch(0)} + base.x, ${ch(1)} + base.y, ${ch(2)} + base.z))), 1.0));`);
+      const at2 = `vec2u(ox * ${scale}u + ${rw}u, oy * ${scale}u + ${rh}u)`;
+      const rgb = `vec3f(vec3h(${ch(0)} + base.x, ${ch(1)} + base.y, ${ch(2)} + base.z))`;
+      if (chroma) {
+        lines.push(`{ let p = ${at2};`
+          + ` let uv = (vec2f(p) + 0.5) / vec2f(f32(dims.width * ${scale}u), f32(dims.height * ${scale}u));`
+          + ` textureStore(dst, p, vec4f(withChroma(${rgb}, textureSampleLevel(chroma, chromaSampler, uv, 0.0).xy), 1.0)); }`);
+      } else {
+        lines.push(`textureStore(dst, ${at2}, vec4f(saturate(${rgb}), 1.0));`);
+      }
     }
   }
   return lines.map((line) => indent + line).join('\n');
 }
 
+/** BT.709: так браузер переводит в RGB видео без меток цвета, а Kodik их не ставит. */
+const LUMA = { r: 0.2126, b: 0.0722 };
+
+const CHROMA_WGSL = `const KR = ${LUMA.r};
+const KB = ${LUMA.b};
+const KG = ${1 - LUMA.r - LUMA.b};
+
+fn toChroma(rgb: vec3f) -> vec2f {
+  let y = dot(rgb, vec3f(KR, KG, KB));
+  return vec2f((rgb.b - y) / (2.0 * (1.0 - KB)), (rgb.r - y) / (2.0 * (1.0 - KR)));
+}`;
+
+/** Яркость — из `rgb`, цветность (Cb, Cr) — `cbcr`; результат зажат в 0..1. */
+const WITH_CHROMA_WGSL = `${CHROMA_WGSL}
+
+fn withChroma(rgb: vec3f, cbcr: vec2f) -> vec3f {
+  let y = dot(rgb, vec3f(KR, KG, KB));
+  let r = y + 2.0 * (1.0 - KR) * cbcr.y;
+  let b = y + 2.0 * (1.0 - KB) * cbcr.x;
+  return saturate(vec3f(r, (y - KR * r - KB * b) / KG, b));
+}`;
+
+/** Веса гаусса σ на отводы −R…R, R = ⌈3σ⌉, нормированы на сумму. */
+export function gaussTaps(sigma: number): number[] {
+  const radius = Math.ceil(3 * sigma);
+  const raw = Array.from({ length: 2 * radius + 1 }, (_, i) => Math.exp(-((i - radius) ** 2) / (2 * sigma * sigma)));
+  const sum = raw.reduce((a, b) => a + b, 0);
+  return raw.map((w) => w / sum);
+}
+
+/** Группа цветовых проходов: 8×8 потоков, пиксель на поток. */
+export const CHROMA_GROUP = 8;
+
+/**
+ * Проход сглаживания цветности в разрешении кадра, по одной оси. Ось `x`
+ * читает кадр и переводит его в Cb/Cr, ось `y` — результат оси `x`.
+ * Края — повтором крайнего пикселя. Выход rgba16float (rg16float нет среди
+ * базовых форматов storage-текстур), заняты xy.
+ */
+export function chromaShader(axis: 'x' | 'y', sigma: number): string {
+  const taps = gaussTaps(sigma);
+  const radius = (taps.length - 1) / 2;
+  const read = axis === 'x' ? 'toChroma(textureLoad(src, q, 0).rgb)' : 'textureLoad(src, q, 0).xy';
+  const step = axis === 'x' ? 'vec2i(k, 0)' : 'vec2i(0, k)';
+  return `${CHROMA_WGSL}
+
+const TAPS = array<f32, ${taps.length}>(${taps.map((w) => w.toFixed(8)).join(', ')});
+
+@group(0) @binding(0) var src: texture_2d<f32>;
+@group(0) @binding(1) var dst: texture_storage_2d<rgba16float, write>;
+
+@compute @workgroup_size(${CHROMA_GROUP}, ${CHROMA_GROUP}, 1)
+fn main(@builtin(global_invocation_id) id: vec3u) {
+  let size = vec2i(textureDimensions(src));
+  let p = vec2i(id.xy);
+  if (p.x >= size.x || p.y >= size.y) { return; }
+  var sum = vec2f(0.0);
+  for (var i = 0; i < ${taps.length}; i++) {
+    let k = i - ${radius};
+    let q = clamp(p + ${step}, vec2i(0), size - 1);
+    sum += TAPS[i] * ${read};
+  }
+  textureStore(dst, p, vec4f(sum, 0.0, 1.0));
+}
+`;
+}
+
 /** Ядро `reference`: как в anion-dl. */
-function referenceMain(layer: CompactLayerMeta, inGroups: number, tailScale?: number): string {
+function referenceMain(layer: CompactLayerMeta, inGroups: number, tailScale: number | undefined, chroma: boolean): string {
   const out = layer.out;
   const lines = [
     '  let ox = wg.x * 8u + lid.x;',
@@ -212,7 +291,7 @@ function referenceMain(layer: CompactLayerMeta, inGroups: number, tailScale?: nu
     lines.push(...range(out).map((o) => `  a${o} = select(f32(blob[dims.preluBase + ${Math.floor(o / PACK)}u][${o % PACK}]) * a${o}, a${o}, a${o} >= 0.0);`));
   }
   if (tailScale) {
-    lines.push(storeTail(tailScale, (o) => `f16(a${o})`, '  '));
+    lines.push(storeTail(tailScale, (o) => `f16(a${o})`, '  ', chroma));
   } else {
     lines.push(`  let outBase = (oy * dims.width + ox) * ${groups(out)}u;`);
     for (let og = 0; og < groups(out); og += 1) {
@@ -225,7 +304,7 @@ function referenceMain(layer: CompactLayerMeta, inGroups: number, tailScale?: nu
 
 /** Быстрые ядра: mat4x4<f16> × vec4<f16>, несколько пикселей на поток. */
 function fastMain(
-  layer: CompactLayerMeta, inGroups: number, kernel: CompactKernel, tailScale?: number,
+  layer: CompactLayerMeta, inGroups: number, kernel: CompactKernel, tailScale: number | undefined, chroma: boolean,
 ): string {
   const { threads, block } = GEOMETRY[kernel];
   const [rw, rh] = kernelRegion(kernel);
@@ -268,7 +347,7 @@ function fastMain(
       }
     }
     if (tailScale) {
-      lines.push(storeTail(tailScale, (o) => `f16(r${Math.floor(o / PACK)}[${o % PACK}])`, '      '));
+      lines.push(storeTail(tailScale, (o) => `f16(r${Math.floor(o / PACK)}[${o % PACK}])`, '      ', chroma));
     } else {
       lines.push(`      let ob = (oy * dims.width + ox) * ${outG}u;`);
       lines.push(...range(outG).map((og) => `      dst[ob + ${og}u] = V(r${og});`));
@@ -282,11 +361,13 @@ function fastMain(
  * Шейдер слоя. Привязки: 0 — dims, 1 — вход (текстура или буфер признаков),
  * 2 — выход (буфер или текстура), 3 — блоб (у быстрых ядер — только смещения
  * и наклоны PReLU), 4 — кадр для skip (последний слой), 5 — веса слоя
- * матрицами (быстрые ядра).
+ * матрицами (быстрые ядра), 6 и 7 — сэмплер и сглаженная цветность
+ * (последний слой с `chroma`).
  */
 export function layerShader({
-  kernel, layer, first, tailScale,
+  kernel, layer, first, tailScale, chroma = false,
 }: LayerShaderOptions): string {
+  const withChroma = Boolean(tailScale) && chroma;
   const inGroups = first ? 1 : layer.inGroups;
   const { threads } = GEOMETRY[kernel];
   const region = kernelRegion(kernel);
@@ -313,7 +394,11 @@ ${tailScale
 @group(0) @binding(3) var<storage, read> blob: array<V>;
 ${tailScale ? '@group(0) @binding(4) var orig: texture_2d<f32>;' : ''}
 ${fast ? '@group(0) @binding(5) var<storage, read> weights: array<mat4x4<f16>>;' : ''}
+${withChroma ? `@group(0) @binding(6) var chromaSampler: sampler;
+@group(0) @binding(7) var chroma: texture_2d<f32>;
 
+${WITH_CHROMA_WGSL}
+` : ''}
 var<workgroup> tile: array<V, ${hw * hh * inGroups}>;
 
 @compute @workgroup_size(${threads[0]}, ${threads[1]}, 1)
@@ -324,7 +409,7 @@ fn main(
 ) {
 ${loadTile(first, threads[0] * threads[1], region)}
 
-${fast ? fastMain(layer, inGroups, kernel, tailScale) : referenceMain(layer, inGroups, tailScale)}
+${fast ? fastMain(layer, inGroups, kernel, tailScale, withChroma) : referenceMain(layer, inGroups, tailScale, withChroma)}
 }
 `;
 }

@@ -1,7 +1,8 @@
 import { Anime4KPipeline } from '../interfaces';
 import { FrameGate, Launch, launcher } from '../helpers/FrameGate';
 import {
-  CompactKernel, CompactModelMeta, groups, kernelRegion, layerBases, layerMatrices, layerShader, packMatrices,
+  CHROMA_GROUP, chromaShader, CompactKernel, CompactModelMeta, groups, kernelRegion, layerBases, layerMatrices,
+  layerShader, packMatrices,
 } from './shaders';
 
 export type { CompactKernel, CompactLayerMeta, CompactModelMeta } from './shaders';
@@ -25,18 +26,30 @@ export interface CompactPipelineDescriptor {
   kernel?: CompactKernel;
   /** Ворота повторов: слои запускаются косвенно и на повторе пропускаются. */
   gate?: FrameGate;
+  /**
+   * Цветность выхода. 0 (по умолчанию) — как у сети. Больше нуля — от сети
+   * берётся только яркость, а цветность — из кадра, сглаженного гауссом с
+   * этим σ (в пикселях кадра) и растянутого билинейно. Сеть выдаёт сразу RGB
+   * и цветовые блоки сжатия (у Kodik цветность в половинном разрешении)
+   * рисует пятнами, как детали; σ = 2 их убирает (docs/PLAN.md, Э12).
+   */
+  chromaSigma?: number;
   name?: string;
 }
 
 interface Step {
   pipeline?: GPUComputePipeline;
   bindGroup: GPUBindGroup;
+  /** Своя сетка запуска (цветовые проходы); без неё — сетка слоёв. */
+  launch?: Launch;
 }
 
 /**
  * SRVGGNetCompact ×2 (AnimeJaNai V2 SuperUltraCompact, режим «Детали»):
  * слой — compute-проход, признаки между слоями — планарные буферы f16
- * (6 × vec4<f16> на пиксель), выход — текстура rgba16float ×2.
+ * (6 × vec4<f16> на пиксель), выход — текстура rgba16float ×2. С
+ * `chromaSigma` перед слоями — два прохода сглаживания цветности кадра, а
+ * последний слой берёт от сети только яркость.
  */
 export class CompactSR implements Anime4KPipeline {
   name: string;
@@ -50,7 +63,7 @@ export class CompactSR implements Anime4KPipeline {
   private launch: Launch;
 
   constructor({
-    device, inputTexture, model, kernel = 'fast', gate, name = 'CompactSR',
+    device, inputTexture, model, kernel = 'fast', gate, chromaSigma = 0, name = 'CompactSR',
   }: CompactPipelineDescriptor) {
     this.name = name;
     const { meta, weights } = model;
@@ -90,6 +103,46 @@ export class CompactSR implements Anime4KPipeline {
     device.queue.writeBuffer(blob, 0, halves);
 
     const compiling: Promise<void>[] = [];
+
+    // Цветность — до слоёв: последний слой читает её при записи выхода.
+    const chroma = chromaSigma > 0;
+    let chromaView: GPUTextureView | undefined;
+    let chromaSampler: GPUSampler | undefined;
+    if (chroma) {
+      const chromaTexture = (label: string) => device.createTexture({
+        label: `${name}: ${label}`,
+        size: [width, height, 1],
+        format: 'rgba16float',
+        usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING,
+      });
+      const across = chromaTexture('chroma x');
+      const blurred = chromaTexture('chroma');
+      chromaView = blurred.createView();
+      chromaSampler = device.createSampler({ magFilter: 'linear', minFilter: 'linear' });
+      const chromaLaunch = launcher(gate, Math.ceil(width / CHROMA_GROUP), Math.ceil(height / CHROMA_GROUP));
+      ([['x', inputTexture, across], ['y', across, blurred]] as const).forEach(([axis, from, to]) => {
+        const step: Step = { bindGroup: undefined as unknown as GPUBindGroup, launch: chromaLaunch };
+        this.steps.push(step);
+        compiling.push(device.createComputePipelineAsync({
+          label: `${name}: chroma ${axis}`,
+          layout: 'auto',
+          compute: {
+            module: device.createShaderModule({ label: `${name}: chroma ${axis}`, code: chromaShader(axis, chromaSigma) }),
+            entryPoint: 'main',
+          },
+        }).then((pipeline) => {
+          step.pipeline = pipeline;
+          step.bindGroup = device.createBindGroup({
+            label: `${name}: chroma ${axis}`,
+            layout: pipeline.getBindGroupLayout(0),
+            entries: [
+              { binding: 0, resource: from.createView() },
+              { binding: 1, resource: to.createView() },
+            ],
+          });
+        }));
+      });
+    }
     let src: GPUBuffer | null = null;
     let dst = ping;
     meta.layers.forEach((layer, index) => {
@@ -111,6 +164,9 @@ export class CompactSR implements Anime4KPipeline {
       ];
       entries.push({ binding: 3, resource: { buffer: blob } });
       if (last) entries.push({ binding: 4, resource: inputTexture.createView() });
+      if (last && chromaView && chromaSampler) {
+        entries.push({ binding: 6, resource: chromaSampler }, { binding: 7, resource: chromaView });
+      }
       if (packed) {
         // Веса слоя — отдельным буфером матриц: выборка mat4x4 целиком, с
         // одной проверкой границ (из общего блоба по vec4 — четыре).
@@ -123,7 +179,7 @@ export class CompactSR implements Anime4KPipeline {
       const module = device.createShaderModule({
         label: `${name}: layer ${index}`,
         code: layerShader({
-          kernel, layer, first, tailScale: last ? scale : undefined,
+          kernel, layer, first, tailScale: last ? scale : undefined, chroma,
         }),
       });
       // Раскладка 'auto' видит только привязки, которые шейдер читает, —
@@ -161,7 +217,7 @@ export class CompactSR implements Anime4KPipeline {
       if (!step.pipeline) throw new Error(`${this.name}: шейдеры ещё компилируются — дождитесь ready.`);
       pass.setPipeline(step.pipeline);
       pass.setBindGroup(0, step.bindGroup);
-      this.launch.dispatch(pass);
+      (step.launch ?? this.launch).dispatch(pass);
     });
     pass.end();
   }

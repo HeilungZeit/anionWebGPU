@@ -100,7 +100,12 @@ async function presetOptions(mode, precision) {
     denoiseModel: $('denoiseModel').value, precision, model: $('artModel').value,
   };
   if (mode !== 'ModeCompact') return common;
-  return { ...common, model: await loadCompactModel($('compactWeights').value), kernel: $('compactKernel').value };
+  return {
+    ...common,
+    model: await loadCompactModel($('compactWeights').value),
+    kernel: $('compactKernel').value,
+    chromaSigma: Number($('compactChroma').value),
+  };
 }
 
 // ---------- источник ----------
@@ -441,7 +446,11 @@ async function run() {
         const compact = mode === 'ModeCompact';
         const weights = $('compactWeights').value;
         const size = mode === 'ModeArtCNN' ? artModel
-          : compact ? [$('compactKernel').value, weights !== COMPACT_REFERENCE_WEIGHTS ? weights : ''].filter(Boolean).join('/')
+          : compact ? [
+            $('compactKernel').value,
+            weights !== COMPACT_REFERENCE_WEIGHTS ? weights : '',
+            `σ${$('compactChroma').value}`,
+          ].filter(Boolean).join('/')
           : (denoiseModel !== 'VL' && denoiseModel) || '';
         const variant = [size, useF16 && !compact ? 'f16' : ''].filter(Boolean).join('/');
         const label = `${mode}${variant ? `/${variant}` : ''} ${sc.src.join('×')}→${sc.dst.join('×')}`;
