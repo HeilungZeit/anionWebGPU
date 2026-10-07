@@ -480,6 +480,12 @@ SRVGGNetCompact 24nf/8nc ×2, ~44.7k MAC на пиксель источника.
       `LICENSE.txt` с атрибуцией и APISR), `COMPACT_WEIGHTS` в `upscale.ts`;
       `janai-v2` оставлена для отката. Выпуск anionWebGPU не нужен — ядро
       то же.
+- Веса для стенда в этот репозиторий не кладутся (как и `janai-v2`) —
+  их источник anion. Достать: `mkdir -p bench/models/kodik-v1 && cp
+  ../anion/public/upscale/janai-v2-kodik/{weights.bin,model.json}
+  bench/models/kodik-v1/`. Переобучать нужно только ради новой версии:
+  APISR (принять условия на HF), серии Kodik, ONNX AnimeJaNai V2 SUC; на
+  MPS результат не воспроизводится бит в бит.
 
 ---
 
