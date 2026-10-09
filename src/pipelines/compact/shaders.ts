@@ -10,14 +10,15 @@
  *   сверки быстрых ядер.
  * - `fast` — слой как умножение mat4x4<f16> на vec4<f16>: накопители — vec4
  *   по четыре выходных канала, 16 FMA на 16 умножений, без переводов
- *   f16 → f32 на каждом слагаемом; два пикселя на поток (вес читается раз на
- *   оба); веса слоя — отдельный storage-буфер `array<mat4x4<f16>>`: матрица
+ *   f16 → f32 на каждом слагаемом; поток — 2×2 пикселя × 3 выходные группы
+ *   из 6 (вес читается раз на четыре пикселя), тайл `[группа][пиксель]`; веса слоя — отдельный storage-буфер `array<mat4x4<f16>>`: матрица
  *   читается одной выборкой с одной проверкой границ. Сумма целиком в f16.
  * - `fast-f32acc` — то же, но сумма по каждому отводу ядра (24 слагаемых)
  *   копится в f16 и переносится в накопитель f32: точнее, но медленнее.
  *
  * Замер (Chrome 153, M1 Pro, 1280×720, только сеть): reference 45.6 мс,
- * fast-f32acc 38.1 мс, fast 29.3 мс. Проверены и отброшены (docs/PLAN.md, Э10):
+ * fast-f32acc 38.1 мс, fast 29.3 мс; раскладка 2×2 × 3 группы (Э14) — ещё
+ * −9.5% у fast и −18% у fast-f32acc, выход бит в бит прежний. Проверены и отброшены (docs/PLAN.md, Э10):
  * веса литералами в коде (в 10 раз медленнее), mat4x4<f32>, веса в общей
  * памяти группы, 3–4 пикселя на поток, веса в uniform-буфере (на wgpu −8%, в
  * Chrome +50%: Tint раскладывает mat4x4<f16> в uniform по-своему).
@@ -59,12 +60,30 @@ export function groups(channels: number): number {
   return Math.ceil(channels / PACK);
 }
 
-/** Потоков в группе по осям и пикселей на поток. */
-const GEOMETRY: Record<CompactKernel, { threads: [number, number]; block: [number, number] }> = {
-  reference: { threads: [8, 8], block: [1, 1] },
-  fast: { threads: [16, 8], block: [2, 1] },
-  'fast-f32acc': { threads: [16, 8], block: [2, 1] },
+interface Geometry {
+  /** Потоков по x, y; по z — сколько потоков делят выходные группы пикселя. */
+  threads: [number, number, number];
+  /** Пикселей на поток по x, y (через шаг в число потоков). */
+  block: [number, number];
+}
+
+/**
+ * Быстрые ядра: поток считает 2×2 пикселя × 3 выходные группы из 6 — весов
+ * на умножение читается вдвое меньше, чем при 2 пикселях × 6 группах, а
+ * накопителей столько же. Хвост (3 группы) на z не делится — у него 2×1
+ * пикселя × все группы; область та же, 32×8.
+ */
+const GEOMETRY: Record<CompactKernel, Geometry> = {
+  reference: { threads: [8, 8, 1], block: [1, 1] },
+  fast: { threads: [16, 4, 2], block: [2, 2] },
+  'fast-f32acc': { threads: [16, 4, 2], block: [2, 2] },
 };
+
+const FAST_TAIL: Geometry = { threads: [16, 8, 1], block: [2, 1] };
+
+function geometry(kernel: CompactKernel, tail: boolean): Geometry {
+  return tail && kernel !== 'reference' ? FAST_TAIL : GEOMETRY[kernel];
+}
 
 /** Сколько пикселей источника покрывает рабочая группа — для диспетча. */
 export function kernelRegion(kernel: CompactKernel): [number, number] {
@@ -140,11 +159,18 @@ export interface LayerShaderOptions {
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 
+/** Индекс в тайле: ячейка `pixel` (HW×HH), группа каналов `g`. */
+function tileAt(pixel: string, g: string, planar: boolean): string {
+  return planar ? `${g} * HW * HH + ${pixel}` : `(${pixel}) * IN_G + ${g}`;
+}
+
 /**
  * Тайл активаций с каймой 1 px: кайма за краем кадра — нули, как padding=1 в
  * Conv2d. Обнулять общую память заранее не нужно: тайл пишется целиком.
+ * Раскладка: `[пиксель][группа]` или, с `planar`, `[группа][пиксель]` —
+ * соседние потоки читают соседние ячейки (`tileAt`).
  */
-function loadTile(first: boolean, threads: number, region: [number, number]): string {
+function loadTile(first: boolean, threads: number, region: [number, number], planar: boolean): string {
   const fill = first
     ? `    var v = V(0.0);
     if (inside) {
@@ -152,12 +178,11 @@ function loadTile(first: boolean, threads: number, region: [number, number]): st
       v = V(f16(c.r), f16(c.g), f16(c.b), 0.0h);
     }
     tile[i] = v;`
-    : `    let d = i * IN_G;
-    if (inside) {
+    : `    if (inside) {
       let s = (u32(gy) * dims.width + u32(gx)) * IN_G;
-      for (var g = 0u; g < IN_G; g++) { tile[d + g] = src[s + g]; }
+      for (var g = 0u; g < IN_G; g++) { tile[${tileAt('i', 'g', planar)}] = src[s + g]; }
     } else {
-      for (var g = 0u; g < IN_G; g++) { tile[d + g] = V(0.0); }
+      for (var g = 0u; g < IN_G; g++) { tile[${tileAt('i', 'g', planar)}] = V(0.0); }
     }`;
   return `  let baseX = i32(wg.x * ${region[0]}u) - 1;
   let baseY = i32(wg.y * ${region[1]}u) - 1;
@@ -302,13 +327,21 @@ function referenceMain(layer: CompactLayerMeta, inGroups: number, tailScale: num
   return lines.join('\n');
 }
 
-/** Быстрые ядра: mat4x4<f16> × vec4<f16>, несколько пикселей на поток. */
+/**
+ * Быстрые ядра: mat4x4<f16> × vec4<f16>, несколько пикселей на поток. Поток
+ * считает `outG / threads.z` выходных групп: группа k — `lid.z * mine + k`.
+ */
 function fastMain(
   layer: CompactLayerMeta, inGroups: number, kernel: CompactKernel, tailScale: number | undefined, chroma: boolean,
 ): string {
-  const { threads, block } = GEOMETRY[kernel];
+  const { threads, block } = geometry(kernel, Boolean(tailScale));
   const [rw, rh] = kernelRegion(kernel);
   const outG = groups(layer.out);
+  const split = threads[2];
+  if (outG % split) throw new Error(`Compact: ${outG} выходных групп не делятся на ${split} потока`);
+  const mine = outG / split;
+  // Номер выходной группы k-го накопителя потока.
+  const og = (k: number) => (split === 1 ? `${k}u` : `lid.z * ${mine}u + ${k}u`);
   const wide = kernel === 'fast-f32acc';
   const acc = wide ? 'vec4f' : 'V';
   // Пиксели потока — через шаг в число потоков: соседние потоки читают
@@ -317,21 +350,21 @@ function fastMain(
   const sum = wide ? 't' : 'a';
 
   const lines = [
-    ...range(outG).flatMap((og) => px.map((_, j) => `  var a${og}_${j} = ${acc}(0.0);`)),
+    ...range(mine).flatMap((k) => px.map((_, j) => `  var a${k}_${j} = ${acc}(0.0);`)),
     '  for (var tap = 0u; tap < 9u; tap++) {',
     '    let ty = lid.y + tap / 3u;',
     '    let tx = lid.x + tap % 3u;',
-    ...(wide ? range(outG).flatMap((og) => px.map((_, j) => `    var t${og}_${j} = V(0.0);`)) : []),
+    ...(wide ? range(mine).flatMap((k) => px.map((_, j) => `    var t${k}_${j} = V(0.0);`)) : []),
     '    for (var g = 0u; g < IN_G; g++) {',
-    ...px.map(({ dx, dy }, j) => `      let x${j} = tile[((ty + ${dy}u) * HW + tx + ${dx}u) * IN_G + g];`),
+    ...px.map(({ dx, dy }, j) => `      let x${j} = tile[${tileAt(`(ty + ${dy}u) * HW + tx + ${dx}u`, 'g', true)}];`),
     `      let w = (tap * IN_G + g) * ${outG}u;`,
-    ...range(outG).flatMap((og) => [
-      `      { let m = weights[w + ${og}u];`,
-      ...px.map((_, j) => `        ${sum}${og}_${j} += m * x${j};`),
+    ...range(mine).flatMap((k) => [
+      `      { let m = weights[w + ${og(k)}];`,
+      ...px.map((_, j) => `        ${sum}${k}_${j} += m * x${j};`),
       '      }',
     ]),
     '    }',
-    ...(wide ? range(outG).flatMap((og) => px.map((_, j) => `    a${og}_${j} += vec4f(t${og}_${j});`)) : []),
+    ...(wide ? range(mine).flatMap((k) => px.map((_, j) => `    a${k}_${j} += vec4f(t${k}_${j});`)) : []),
     '  }',
   ];
 
@@ -340,17 +373,17 @@ function fastMain(
     let ox = wg.x * ${rw}u + lid.x + ${dx}u;
     let oy = wg.y * ${rh}u + lid.y + ${dy}u;
     if (ox < dims.width && oy < dims.height) {`);
-    for (let og = 0; og < outG; og += 1) {
-      lines.push(`      var r${og} = a${og}_${j} + ${acc}(blob[dims.biasBase + ${og}u]);`);
+    for (let k = 0; k < mine; k += 1) {
+      lines.push(`      var r${k} = a${k}_${j} + ${acc}(blob[dims.biasBase + ${og(k)}]);`);
       if (layer.prelu) {
-        lines.push(`      r${og} = select(${acc}(blob[dims.preluBase + ${og}u]) * r${og}, r${og}, r${og} >= ${acc}(0.0));`);
+        lines.push(`      r${k} = select(${acc}(blob[dims.preluBase + ${og(k)}]) * r${k}, r${k}, r${k} >= ${acc}(0.0));`);
       }
     }
     if (tailScale) {
       lines.push(storeTail(tailScale, (o) => `f16(r${Math.floor(o / PACK)}[${o % PACK}])`, '      ', chroma));
     } else {
       lines.push(`      let ob = (oy * dims.width + ox) * ${outG}u;`);
-      lines.push(...range(outG).map((og) => `      dst[ob + ${og}u] = V(r${og});`));
+      lines.push(...range(mine).map((k) => `      dst[ob + ${og(k)}] = V(r${k});`));
     }
     lines.push('    }\n  }');
   });
@@ -369,7 +402,7 @@ export function layerShader({
 }: LayerShaderOptions): string {
   const withChroma = Boolean(tailScale) && chroma;
   const inGroups = first ? 1 : layer.inGroups;
-  const { threads } = GEOMETRY[kernel];
+  const { threads } = geometry(kernel, Boolean(tailScale));
   const region = kernelRegion(kernel);
   const fast = kernel !== 'reference';
   const hw = region[0] + 2;
@@ -401,13 +434,13 @@ ${WITH_CHROMA_WGSL}
 ` : ''}
 var<workgroup> tile: array<V, ${hw * hh * inGroups}>;
 
-@compute @workgroup_size(${threads[0]}, ${threads[1]}, 1)
+@compute @workgroup_size(${threads.join(', ')})
 fn main(
   @builtin(workgroup_id) wg: vec3u,
   @builtin(local_invocation_id) lid: vec3u,
   @builtin(local_invocation_index) li: u32,
 ) {
-${loadTile(first, threads[0] * threads[1], region)}
+${loadTile(first, threads[0] * threads[1] * threads[2], region, fast)}
 
 ${fast ? fastMain(layer, inGroups, kernel, tailScale, withChroma) : referenceMain(layer, inGroups, tailScale, withChroma)}
 }
