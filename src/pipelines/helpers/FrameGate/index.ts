@@ -11,8 +11,17 @@ export interface FrameGateDescriptor {
    * Порог в уровнях 8 бит: кадр пропускается, если ни один канал ни одного
    * пикселя не отличается от последнего посчитанного больше чем на него.
    * 0 (по умолчанию) — только точные повторы: выход тот же, что без ворот.
+   * У видео после x264 точных повторов почти нет: тот же рисунок отличается
+   * шумом сжатия до ~16 уровней (docs/PLAN.md, Э15).
    */
   threshold?: number;
+  /**
+   * Второе условие пропуска: средний по кадру знаковый сдвиг каждого канала
+   * не больше этого числа уровней, по умолчанию 0.5. Шум сжатия в среднем
+   * около нуля, а затемнение с малым шагом — нет: без условия оно шло бы
+   * ступенями по `threshold`. При `threshold` 0 ничего не меняет.
+   */
+  meanThreshold?: number;
   name?: string;
 }
 
@@ -89,7 +98,7 @@ export class FrameGate implements Anime4KPipeline {
   private copyLaunch: Launch;
 
   constructor({
-    device, inputTexture, threshold = 0, name = 'frame gate',
+    device, inputTexture, threshold = 0, meanThreshold = 0.5, name = 'frame gate',
   }: FrameGateDescriptor) {
     this.name = name;
     this.device = device;
@@ -109,7 +118,7 @@ export class FrameGate implements Anime4KPipeline {
     });
     this.state = device.createBuffer({
       label: `${name}: state`,
-      size: 32,
+      size: 64,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC,
     });
     // Опорный кадр в 8 битах: сравнение идёт в уровнях 8 бит, как у видео.
@@ -121,6 +130,7 @@ export class FrameGate implements Anime4KPipeline {
     });
 
     this.setThreshold(threshold);
+    this.setMeanThreshold(meanThreshold);
     // Первый кадр считается всегда: опорный ещё пуст.
     this.invalidate();
     this.copyLaunch = this.slot(Math.ceil(this.width / 8), Math.ceil(this.height / 8));
@@ -159,7 +169,7 @@ export class FrameGate implements Anime4KPipeline {
         entries: [
           { binding: 0, resource: inputTexture.createView() },
           { binding: 1, resource: this.prev.createView() },
-          { binding: 2, resource: { buffer: this.state, offset: 0, size: 4 } },
+          { binding: 2, resource: { buffer: this.state } },
         ],
       }),
       decide: device.createBindGroup({
@@ -212,6 +222,12 @@ export class FrameGate implements Anime4KPipeline {
     this.device.queue.writeBuffer(this.state, 12, new Uint32Array([Math.max(0, Math.floor(threshold))]));
   }
 
+  /** Порог среднего сдвига в уровнях 8 бит (см. `meanThreshold`). */
+  setMeanThreshold(meanThreshold: number): void {
+    const limit = Math.floor(Math.max(0, meanThreshold) * this.width * this.height);
+    this.device.queue.writeBuffer(this.state, 44, new Uint32Array([Math.min(limit, 0x7fffffff)]));
+  }
+
   /** Посчитать следующий кадр, даже если он повтор. */
   invalidate(): void {
     this.device.queue.writeBuffer(this.state, 20, new Uint32Array([1]));
@@ -242,6 +258,10 @@ export class FrameGate implements Anime4KPipeline {
       this.setThreshold(Number(value));
       return;
     }
+    if (param === 'meanThreshold') {
+      this.setMeanThreshold(Number(value));
+      return;
+    }
     throw new Error(`${this.name} has no param ${param}.`);
   }
 
@@ -251,6 +271,7 @@ export class FrameGate implements Anime4KPipeline {
       throw new Error(`${this.name}: шейдеры ещё компилируются — дождитесь ready.`);
     }
     encoder.clearBuffer(this.state, 0, 4);
+    encoder.clearBuffer(this.state, 32, 12);
     const pass = encoder.beginComputePass({ label: this.name });
     pass.setPipeline(diff);
     pass.setBindGroup(0, this.bindGroups.diff);
