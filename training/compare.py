@@ -44,6 +44,8 @@ def main() -> None:
     for series in sorted((DATA / "kodik").iterdir()):
         for name in FRAMES:
             img = cv2.imread(str(series / f"{name}.png"))
+            if img is None:  # одиночные кадры вроде `dara1/` — не в мозаику
+                continue
             h, w = img.shape[:2]
             cw, ch = CROP
             # Контекст в 8 пикселей, чтобы край свёрток не попал в мозаику.

@@ -73,6 +73,25 @@ def sobel(x: torch.Tensor) -> torch.Tensor:
     return F.conv2d(x, k, padding=1, groups=3)
 
 
+def ink_weight(target: torch.Tensor, ink: float) -> torch.Tensor:
+    """Вес пикселя в L1: 1 + `ink` на штрихе цели — там, где она темнее своего
+    окружения (гаусс σ = 4 px) на 20 уровней и больше (плавно с 10). Без него
+    сеть на неуверенном входе рисует линии и буквы светлее цели."""
+    r, g, b = target.unbind(-3)
+    y = (0.2126 * r + 0.7152 * g + 0.0722 * b)[:, None]
+    x = torch.arange(-12, 13, device=target.device, dtype=target.dtype)
+    k = torch.exp(-(x**2) / (2 * 4.0**2))
+    k = k / k.sum()
+    blur = F.conv2d(F.pad(y, (12, 12, 0, 0), mode="replicate"), k.view(1, 1, 1, -1))
+    blur = F.conv2d(F.pad(blur, (0, 0, 12, 12), mode="replicate"), k.view(1, 1, -1, 1))
+    depth = (blur - y) * 255
+    return 1 + ink * ((depth - 10) / 10).clamp(0, 1)
+
+
+def wl1(a: torch.Tensor, b: torch.Tensor, w: torch.Tensor | None) -> torch.Tensor:
+    return F.l1_loss(a, b) if w is None else ((a - b).abs() * w).sum() / (w.sum() * a.shape[-3])
+
+
 def clean_input(gt: torch.Tensor) -> torch.Tensor:
     """Вход без порчи: эталон, уменьшенный усреднением 2×2 — то же, что
     INTER_AREA в `random_degrade` до порчи."""
@@ -128,6 +147,13 @@ def main() -> None:
         help="доля цели «исходная модель на чистом входе» вместо эталона: "
         "L1 к эталону тянет к мылу, учитель сохраняет вид JaNai",
     )
+    p.add_argument(
+        "--ink",
+        type=float,
+        default=0.0,
+        help="добавочный вес L1 на штрихе цели (линии, буквы): против их высветления",
+    )
+    p.add_argument("--from", dest="start", type=Path, help="начать с чекпойнта .pt вместо --init")
     p.add_argument("--every", type=int, default=2_000)
     args = p.parse_args()
 
@@ -142,9 +168,11 @@ def main() -> None:
 
     model = Compact().to(device)
     load_onnx(model, args.init)
+    if args.start:
+        model.load_state_dict(torch.load(args.start, map_location=device))
     teacher = Compact().to(device).eval().requires_grad_(False)
     load_onnx(teacher, args.init)
-    say(f"старт с {args.init.name}, учитель {args.teacher}")
+    say(f"старт с {(args.start or args.init).name}, учитель {args.teacher}, штрих {args.ink}")
     say("val PSNR к эталону {:.3f} дБ, к учителю {:.3f} дБ".format(*validate(model, teacher, device)))
 
     # Целиком в память (~3 ГБ): случайное чтение из memmap держало 4 it/s.
@@ -174,11 +202,13 @@ def main() -> None:
         out = model(lq)
         loss = 0.0
         if args.teacher < 1:
-            loss += (1 - args.teacher) * (F.l1_loss(out, gt) + args.edge * F.l1_loss(sobel(out), sobel(gt)))
+            w = ink_weight(gt, args.ink) if args.ink else None
+            loss += (1 - args.teacher) * (wl1(out, gt, w) + args.edge * wl1(sobel(out), sobel(gt), w))
         if args.teacher > 0:
             with torch.no_grad():
                 target = teacher(clean_input(gt))
-            loss += args.teacher * (F.l1_loss(out, target) + args.edge * F.l1_loss(sobel(out), sobel(target)))
+                w = ink_weight(target, args.ink) if args.ink else None
+            loss += args.teacher * (wl1(out, target, w) + args.edge * wl1(sobel(out), sobel(target), w))
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()

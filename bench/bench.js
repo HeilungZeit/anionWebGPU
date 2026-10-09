@@ -80,7 +80,8 @@ const COMPACT_REFERENCE_WEIGHTS = 'janai-v2';
 /**
  * Веса SuperUltraCompact из bench/models/<name> (локальные): `janai-v2` —
  * AnimeJaNai V2 как в anion, `kodik-v1` — она же, дообученная под порчу
- * Kodik (Э11, `training/`).
+ * Kodik (Э11, `training/`); `kodik-ink3` / `kodik-ink8` — с весом штриха в
+ * обучении (Э13).
  */
 async function loadCompactModel(name) {
   if (compactModels.has(name)) return compactModels.get(name);
