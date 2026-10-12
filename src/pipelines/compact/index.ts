@@ -2,7 +2,7 @@ import { Anime4KPipeline } from '../interfaces';
 import { FrameGate, Launch, launcher } from '../helpers/FrameGate';
 import {
   CHROMA_GROUP, chromaShader, CompactKernel, CompactModelMeta, groups, kernelRegion, layerBases, layerMatrices,
-  layerShader, packMatrices,
+  layerShader, packMatrices, WINO_REGION, winoLayerShader, winoMatrices,
 } from './shaders';
 
 export type { CompactKernel, CompactLayerMeta, CompactModelMeta } from './shaders';
@@ -21,7 +21,8 @@ export interface CompactPipelineDescriptor {
   model: CompactModelData;
   /**
    * Ядро, по умолчанию `fast`. `reference` — как в anion-dl (эталон),
-   * `fast-f32acc` — быстрое с суммой в f32, точнее и медленнее.
+   * `fast-f32acc` — быстрое с суммой в f32, точнее и медленнее. `wino` —
+   * внутренние слои на Winograd: быстрее `fast` в WebKit, медленнее в Chrome.
    */
   kernel?: CompactKernel;
   /** Ворота повторов: слои запускаются косвенно и на повторе пропускаются. */
@@ -75,9 +76,16 @@ export class CompactSR implements Anime4KPipeline {
 
     const { width, height } = inputTexture;
     const { scale } = meta;
-    const [regionX, regionY] = kernelRegion(kernel);
+    // У `wino` первый и последний слои — ядра `fast`, внутренние — Winograd.
+    const wino = kernel === 'wino';
+    const direct: CompactKernel = wino ? 'fast' : kernel;
+    const [regionX, regionY] = kernelRegion(direct);
     // У всех слоёв одна сетка групп — один слот косвенного запуска на все.
+    // Внутренним слоям Winograd — своя: их область вдвое уже.
     this.launch = launcher(gate, Math.ceil(width / regionX), Math.ceil(height / regionY));
+    const winoLaunch = wino
+      ? launcher(gate, Math.ceil(width / WINO_REGION[0]), Math.ceil(height / WINO_REGION[1]))
+      : undefined;
 
     this.outputTexture = device.createTexture({
       label: `${name}: output`,
@@ -148,6 +156,7 @@ export class CompactSR implements Anime4KPipeline {
     meta.layers.forEach((layer, index) => {
       const first = index === 0;
       const last = index === meta.layers.length - 1;
+      const inner = wino && !first && !last;
       const bases = packed ? packed.bases[index] : layerBases(layer);
 
       const dims = device.createBuffer({
@@ -167,7 +176,14 @@ export class CompactSR implements Anime4KPipeline {
       if (last && chromaView && chromaSampler) {
         entries.push({ binding: 6, resource: chromaSampler }, { binding: 7, resource: chromaView });
       }
-      if (packed) {
+      if (inner) {
+        // Веса Winograd (G g Gᵀ) считаются здесь из исходного блоба: 16
+        // позиций вместо 9 отводов, смещения и PReLU — из общего блоба.
+        const transformed = winoMatrices(layer, raw);
+        const matrices = device.createBuffer({ label: `${name}: weights ${index}`, size: transformed.byteLength, usage: storage });
+        device.queue.writeBuffer(matrices, 0, transformed);
+        entries.push({ binding: 5, resource: { buffer: matrices } });
+      } else if (packed) {
         // Веса слоя — отдельным буфером матриц: выборка mat4x4 целиком, с
         // одной проверкой границ (из общего блоба по vec4 — четыре).
         const size = layerMatrices(layer) * 32;
@@ -178,13 +194,15 @@ export class CompactSR implements Anime4KPipeline {
 
       const module = device.createShaderModule({
         label: `${name}: layer ${index}`,
-        code: layerShader({
-          kernel, layer, first, tailScale: last ? scale : undefined, chroma,
-        }),
+        code: inner
+          ? winoLayerShader(layer)
+          : layerShader({
+            kernel: direct, layer, first, tailScale: last ? scale : undefined, chroma,
+          }),
       });
       // Раскладка 'auto' видит только привязки, которые шейдер читает, —
       // группа собирается после компиляции.
-      const step: Step = { bindGroup: undefined as unknown as GPUBindGroup };
+      const step: Step = { bindGroup: undefined as unknown as GPUBindGroup, launch: inner ? winoLaunch : undefined };
       this.steps.push(step);
       compiling.push(device.createComputePipelineAsync({
         label: `${name}: layer ${index}`,

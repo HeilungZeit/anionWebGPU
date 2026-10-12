@@ -31,7 +31,12 @@
 /** Каналы пакуются по четыре в vec4<f16>. */
 const PACK = 4;
 
-export type CompactKernel = 'reference' | 'fast' | 'fast-f32acc';
+/**
+ * `wino` — внутренние слои Winograd F(2×2, 3×3) (`winoLayerShader`), первый и
+ * последний — `fast`. Быстрее `fast` только в WebKit (Safari 27: −12%), в
+ * Chrome на 23% медленнее — выбор по движку на стороне плеера (Э18).
+ */
+export type CompactKernel = 'reference' | 'fast' | 'fast-f32acc' | 'wino';
 
 /** Слой из `model.json` конвертера anion-dl; `offset` — в байтах от начала блоба. */
 export interface CompactLayerMeta {
@@ -77,6 +82,8 @@ const GEOMETRY: Record<CompactKernel, Geometry> = {
   reference: { threads: [8, 8, 1], block: [1, 1] },
   fast: { threads: [16, 4, 2], block: [2, 2] },
   'fast-f32acc': { threads: [16, 4, 2], block: [2, 2] },
+  // Первый и последний слои `wino` — те же, что у `fast`.
+  wino: { threads: [16, 4, 2], block: [2, 2] },
 };
 
 const FAST_TAIL: Geometry = { threads: [16, 8, 1], block: [2, 1] };
@@ -443,6 +450,195 @@ fn main(
 ${loadTile(first, threads[0] * threads[1] * threads[2], region, fast)}
 
 ${fast ? fastMain(layer, inGroups, kernel, tailScale, withChroma) : referenceMain(layer, inGroups, tailScale, withChroma)}
+}
+`;
+}
+
+// ——— Winograd F(2×2, 3×3) для внутренних слоёв (ядро `wino`, Э16, Э18) ———
+//
+// y = Aᵀ[(G g Gᵀ) ⊙ (Bᵀ d B)]A — корреляция, как Conv2d. Поток — плитка 2×2
+// выхода (вход 4×4 из тайла) и 2 выходные группы из 6; 16 позиций ξν — 16
+// умножений mat4x4 × vec4 на группу вместо 36 (9 отводов × 4 пикселя).
+// Раскладка — вариант лаборатории `wino-z3s`: плиток 8×4, группы делят 3
+// потока по z. Выход не бит в бит как у `fast` (другая арифметика), PSNR
+// против эталона выше: 67.6 дБ против 65.2.
+
+/** Плиток 2×2 на группу по x, y и потоков по z, делящих выходные группы. */
+const WINO_TILES: [number, number] = [8, 4];
+const WINO_Z = 3;
+
+/** Сколько пикселей покрывает группа внутреннего слоя `wino` — для диспетча. */
+export const WINO_REGION: [number, number] = [2 * WINO_TILES[0], 2 * WINO_TILES[1]];
+
+const G_ROWS = [[1, 0, 0], [0.5, 0.5, 0.5], [0.5, -0.5, 0.5], [0, 0, 1]];
+
+function halfToFloat(h: number): number {
+  const sign = h & 0x8000 ? -1 : 1;
+  const exp = (h >> 10) & 0x1f;
+  const frac = h & 0x3ff;
+  if (exp === 0) return sign * frac * 2 ** -24;
+  if (exp === 31) return frac ? NaN : sign * Infinity;
+  return sign * (1 + frac / 1024) * 2 ** (exp - 15);
+}
+
+function roundHalfEven(x: number): number {
+  const floor = Math.floor(x);
+  const rest = x - floor;
+  if (rest !== 0.5) return rest < 0.5 ? floor : floor + 1;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/** Число → f16 с округлением к ближайшему чётному, как Float16Array. */
+function floatToHalf(value: number): number {
+  if (Number.isNaN(value)) return 0x7e00;
+  const sign = value < 0 || Object.is(value, -0) ? 0x8000 : 0;
+  const a = Math.abs(value);
+  if (a >= 65520) return sign | 0x7c00;
+  // Субнормали: шаг 2^-24; перенос в 1024 — это ровно наименьшее нормальное.
+  if (a < 2 ** -14) return sign | roundHalfEven(a * 2 ** 24);
+  let exp = Math.floor(Math.log2(a));
+  if (2 ** exp > a) exp -= 1;
+  if (2 ** (exp + 1) <= a) exp += 1;
+  // Перенос мантиссы в 1024 сам поднимает порядок на единицу.
+  return sign | (((exp + 15) << 10) + roundHalfEven((a / 2 ** exp - 1) * 1024));
+}
+
+/**
+ * Веса внутреннего слоя после G g Gᵀ: mat4x4 `[позиция 16][inGroup][outGroup]`
+ * (столбец — входной канал, строка — выходной, как у packMatrices), f16.
+ * `raw` — блоб конвертера целиком.
+ */
+export function winoMatrices(layer: CompactLayerMeta, raw: Uint16Array): Uint16Array {
+  const src = layerBases(layer);
+  const outGroups = groups(layer.out);
+  const w = (o: number, tap: number, i: number): number => (o < layer.out
+    ? halfToFloat(raw[(src.w + (o * 9 + tap) * layer.inGroups + Math.floor(i / PACK)) * PACK + (i % PACK)])
+    : 0);
+  const out: number[] = [];
+  for (let xi = 0; xi < 4; xi += 1) {
+    for (let nu = 0; nu < 4; nu += 1) {
+      for (let g = 0; g < layer.inGroups; g += 1) {
+        for (let og = 0; og < outGroups; og += 1) {
+          for (let c = 0; c < PACK; c += 1) {
+            for (let r = 0; r < PACK; r += 1) {
+              let u = 0;
+              for (let ky = 0; ky < 3; ky += 1) {
+                for (let kx = 0; kx < 3; kx += 1) {
+                  u += G_ROWS[xi][ky] * w(og * PACK + r, ky * 3 + kx, g * PACK + c) * G_ROWS[nu][kx];
+                }
+              }
+              out.push(floatToHalf(u));
+            }
+          }
+        }
+      }
+    }
+  }
+  return Uint16Array.from(out);
+}
+
+/**
+ * Внутренний слой (вход и выход — буферы признаков, PReLU) на Winograd.
+ * Привязки как у `fast`: 0 — размеры и смещения, 1/2 — признаки, 3 — блоб
+ * (смещения и наклоны PReLU), 5 — веса `winoMatrices`.
+ */
+export function winoLayerShader(layer: CompactLayerMeta): string {
+  const inG = layer.inGroups;
+  const outG = groups(layer.out);
+  const mine = outG / WINO_Z;
+  if (!Number.isInteger(mine)) throw new Error(`wino: ${outG} выходных групп не делятся на ${WINO_Z}`);
+  const [tx, ty] = WINO_TILES;
+  const [rw, rh] = WINO_REGION;
+  const hw = rw + 2;
+  const hh = rh + 2;
+  const threads = tx * ty * WINO_Z;
+  const og = (k: number) => `lid.z * ${mine}u + ${k}u`;
+  const P = range(16);
+  const K = range(mine);
+  const lines: string[] = [];
+  lines.push(...P.flatMap((p) => K.map((k) => `  var m${p}_${k} = V(0.0);`)));
+  lines.push('  let t0 = (2u * lid.y) * HW + 2u * lid.x;');
+  lines.push('  for (var g = 0u; g < IN_G; g++) {');
+  lines.push(`    let w = g * ${outG}u;`);
+  for (let r = 0; r < 4; r += 1) {
+    for (let c = 0; c < 4; c += 1) lines.push(`    let d${r}${c} = tile[g * HW * HH + t0 + ${r * hw + c}u];`);
+  }
+  // Bᵀd по столбцам: s0 = d0 − d2, s1 = d1 + d2, s2 = d2 − d1, s3 = d1 − d3.
+  for (let c = 0; c < 4; c += 1) {
+    lines.push(`    let s0${c} = d0${c} - d2${c}; let s1${c} = d1${c} + d2${c}; let s2${c} = d2${c} - d1${c}; let s3${c} = d1${c} - d3${c};`);
+  }
+  // … затем B по строкам.
+  for (let r = 0; r < 4; r += 1) {
+    lines.push(`    let v${r * 4} = s${r}0 - s${r}2; let v${r * 4 + 1} = s${r}1 + s${r}2;`);
+    lines.push(`    let v${r * 4 + 2} = s${r}2 - s${r}1; let v${r * 4 + 3} = s${r}1 - s${r}3;`);
+  }
+  for (const p of P) {
+    for (const k of K) {
+      lines.push(`    m${p}_${k} += weights[${p * inG * outG}u + w + ${og(k)}] * v${p};`);
+    }
+  }
+  lines.push('  }');
+  // Aᵀ M A и запись четырёх пикселей плитки.
+  lines.push(`  let oy = wg.y * ${rh}u + 2u * lid.y;`);
+  lines.push(`  let ox = wg.x * ${rw}u + 2u * lid.x;`);
+  for (const k of K) {
+    const m = (r: number, c: number) => `m${r * 4 + c}_${k}`;
+    lines.push('  {');
+    for (let c = 0; c < 4; c += 1) {
+      lines.push(`    let a0${c} = ${m(0, c)} + ${m(1, c)} + ${m(2, c)}; let a1${c} = ${m(1, c)} - ${m(2, c)} - ${m(3, c)};`);
+    }
+    lines.push(`    let bias = blob[dims.biasBase + ${og(k)}];`);
+    if (layer.prelu) lines.push(`    let slope = blob[dims.preluBase + ${og(k)}];`);
+    for (let i = 0; i < 2; i += 1) {
+      [`a${i}0 + a${i}1 + a${i}2`, `a${i}1 - a${i}2 - a${i}3`].forEach((y, j) => {
+        lines.push(`    if (ox + ${j}u < dims.width && oy + ${i}u < dims.height) {
+      var r = ${y} + bias;${layer.prelu ? '\n      r = select(slope * r, r, r >= V(0.0));' : ''}
+      dst[((oy + ${i}u) * dims.width + ox + ${j}u) * ${outG}u + ${og(k)}] = r;
+    }`);
+      });
+    }
+    lines.push('  }');
+  }
+
+  return `enable f16;
+alias V = vec4<f16>;
+
+const HW: u32 = ${hw}u;
+const HH: u32 = ${hh}u;
+const IN_G: u32 = ${inG}u;
+
+struct Dims { width: u32, height: u32, wBase: u32, biasBase: u32, preluBase: u32 }
+
+@group(0) @binding(0) var<uniform> dims: Dims;
+@group(0) @binding(1) var<storage, read> src: array<V>;
+@group(0) @binding(2) var<storage, read_write> dst: array<V>;
+@group(0) @binding(3) var<storage, read> blob: array<V>;
+@group(0) @binding(5) var<storage, read> weights: array<mat4x4<f16>>;
+
+var<workgroup> tile: array<V, ${hw * hh * inG}>;
+
+@compute @workgroup_size(${tx}, ${ty}, ${WINO_Z})
+fn main(
+  @builtin(workgroup_id) wg: vec3u,
+  @builtin(local_invocation_id) lid: vec3u,
+  @builtin(local_invocation_index) li: u32,
+) {
+  let baseX = i32(wg.x * ${rw}u) - 1;
+  let baseY = i32(wg.y * ${rh}u) - 1;
+  for (var i = li; i < HW * HH; i += ${threads}u) {
+    let gx = baseX + i32(i % HW);
+    let gy = baseY + i32(i / HW);
+    let inside = gx >= 0 && gy >= 0 && gx < i32(dims.width) && gy < i32(dims.height);
+    if (inside) {
+      let s = (u32(gy) * dims.width + u32(gx)) * IN_G;
+      for (var g = 0u; g < IN_G; g++) { tile[g * HW * HH + i] = src[s + g]; }
+    } else {
+      for (var g = 0u; g < IN_G; g++) { tile[g * HW * HH + i] = V(0.0); }
+    }
+  }
+  workgroupBarrier();
+
+${lines.join('\n')}
 }
 `;
 }
