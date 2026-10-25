@@ -43,6 +43,53 @@ class Compact(nn.Module):
         return out + F.interpolate(x, scale_factor=self.scale, mode="nearest")
 
 
+class CompactU(nn.Module):
+    """Compact на половинной сетке (Э19): вход разложен pixel-unshuffle 2×2 в
+    12 каналов, свёртки считают 360p вместо 720p, последний слой отдаёт 3·4²
+    канала — pixelshuffle ×4 даёт сразу ×2 к входу. Умножений на пиксель
+    источника — C²·9/4 на слой против 24²·9 у SUC, поле зрения вдвое шире."""
+
+    def __init__(self, num_feat: int = 48, num_conv: int = 7, scale: int = 2):
+        super().__init__()
+        self.scale = scale
+        layers: list[nn.Module] = [nn.Conv2d(12, num_feat, 3, padding=1), nn.PReLU(num_feat)]
+        for _ in range(num_conv):
+            layers += [nn.Conv2d(num_feat, num_feat, 3, padding=1), nn.PReLU(num_feat)]
+        layers.append(nn.Conv2d(num_feat, 3 * (2 * scale) ** 2, 3, padding=1))
+        self.body = nn.Sequential(*layers)
+        # С нуля выход начинается почти с skip: иначе случайный хвост первые
+        # тысячи итераций учит только погасить себя.
+        with torch.no_grad():
+            layers[-1].weight.mul_(0.1)
+            layers[-1].bias.zero_()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = F.pixel_shuffle(self.body(F.pixel_unshuffle(x, 2)), 2 * self.scale)
+        return out + F.interpolate(x, scale_factor=self.scale, mode="nearest")
+
+
+def build(arch: str) -> nn.Module:
+    """`suc` — SRVGGNetCompact 24nf/8nc; `u<C>x<N>` — CompactU с C каналами и
+    N внутренними свёртками."""
+    if arch == "suc":
+        return Compact()
+    feat, conv = arch.removeprefix("u").split("x")
+    return CompactU(int(feat), int(conv))
+
+
+def load_any(path: Path) -> nn.Module:
+    """ONNX — веса SUC; `.pt` — чекпойнт прогона, архитектура из `arch.txt`
+    рядом (нет файла — SUC)."""
+    if path.suffix != ".pt":
+        model = Compact()
+        load_onnx(model, path)
+        return model.eval()
+    arch_file = path.parent / "arch.txt"
+    model = build(arch_file.read_text().strip() if arch_file.exists() else "suc")
+    model.load_state_dict(torch.load(path, map_location="cpu"))
+    return model.eval()
+
+
 def load_onnx(model: Compact, path: Path) -> None:
     """Свёртки и PReLU из графа — в порядке графа, как у `compact-to-wgsl.py`."""
     graph = onnx.load(str(path)).graph
@@ -134,7 +181,14 @@ def export(model: Compact, path: Path) -> None:
 
 def main() -> None:
     p = argparse.ArgumentParser()
-    p.add_argument("--init", type=Path, required=True)
+    p.add_argument("--init", type=Path, help="ONNX SUC, с которого начать; без него — с нуля")
+    p.add_argument("--arch", default="suc", help="suc или u<C>x<N> (CompactU)")
+    p.add_argument(
+        "--teacher-model",
+        type=Path,
+        default=DATA / "init" / "2x_AnimeJaNai_V2_SuperUltraCompact_100k.onnx",
+        help="ONNX SUC учителя (по умолчанию — AnimeJaNai V2 SUC)",
+    )
     p.add_argument("--run", type=Path, required=True)
     p.add_argument("--iters", type=int, default=30_000)
     p.add_argument("--batch", type=int, default=32)
@@ -155,6 +209,7 @@ def main() -> None:
     )
     p.add_argument("--from", dest="start", type=Path, help="начать с чекпойнта .pt вместо --init")
     p.add_argument("--every", type=int, default=2_000)
+    p.add_argument("--mmap", action="store_true", help="данные через memmap, не в память")
     args = p.parse_args()
 
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
@@ -166,18 +221,28 @@ def main() -> None:
         log.write(text + "\n")
         log.flush()
 
-    model = Compact().to(device)
-    load_onnx(model, args.init)
+    torch.manual_seed(0)
+    model = build(args.arch)
+    if args.init:
+        load_onnx(model, args.init)
+    model = model.to(device)
     if args.start:
         model.load_state_dict(torch.load(args.start, map_location=device))
+    (args.run / "arch.txt").write_text(args.arch + "\n")
     teacher = Compact().to(device).eval().requires_grad_(False)
-    load_onnx(teacher, args.init)
-    say(f"старт с {(args.start or args.init).name}, учитель {args.teacher}, штрих {args.ink}")
+    load_onnx(teacher, args.teacher_model)
+    origin = args.start or args.init
+    params = sum(p.numel() for p in model.parameters())
+    say(f"{args.arch} ({params} параметров), старт с {origin.name if origin else 'нуля'}, "
+        f"учитель {args.teacher}, штрих {args.ink}, lr {args.lr}")
     say("val PSNR к эталону {:.3f} дБ, к учителю {:.3f} дБ".format(*validate(model, teacher, device)))
 
     # Целиком в память (~3 ГБ): случайное чтение из memmap держало 4 it/s.
-    lq_all = np.load(DATA / "train" / "lq.npy")
-    gt_all = np.load(DATA / "train" / "gt.npy")
+    # С `--mmap` — memmap: параллельные прогоны делят кэш страниц, а не
+    # держат по копии.
+    mode = "r" if args.mmap else None
+    lq_all = np.load(DATA / "train" / "lq.npy", mmap_mode=mode)
+    gt_all = np.load(DATA / "train" / "gt.npy", mmap_mode=mode)
     say(f"пар: {len(lq_all)}, устройство: {device}")
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99))

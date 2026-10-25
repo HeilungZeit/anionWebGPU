@@ -50,7 +50,8 @@ interface Step {
  * слой — compute-проход, признаки между слоями — планарные буферы f16
  * (6 × vec4<f16> на пиксель), выход — текстура rgba16float ×2. С
  * `chromaSigma` перед слоями — два прохода сглаживания цветности кадра, а
- * последний слой берёт от сети только яркость.
+ * последний слой берёт от сети только яркость. `SRVGGNetCompactU` — слои
+ * на сетке вдвое реже кадра (вход pixel-unshuffle 2×2, выход pixelshuffle ×4).
  */
 export class CompactSR implements Anime4KPipeline {
   name: string;
@@ -68,7 +69,10 @@ export class CompactSR implements Anime4KPipeline {
   }: CompactPipelineDescriptor) {
     this.name = name;
     const { meta, weights } = model;
-    if (meta.arch !== 'SRVGGNetCompact') throw new Error(`${name}: архитектура ${meta.arch} не поддерживается`);
+    // `SRVGGNetCompactU` (Э19) — та же сеть на сетке вдвое реже кадра.
+    const unshuffle = meta.arch === 'SRVGGNetCompactU';
+    if (!unshuffle && meta.arch !== 'SRVGGNetCompact') throw new Error(`${name}: архитектура ${meta.arch} не поддерживается`);
+    if (unshuffle && meta.unshuffle !== 2) throw new Error(`${name}: unshuffle ${meta.unshuffle} не поддерживается`);
     if (weights.byteLength !== meta.bytes) {
       throw new Error(`${name}: веса ${weights.byteLength} Б, в описании ${meta.bytes} Б`);
     }
@@ -76,13 +80,18 @@ export class CompactSR implements Anime4KPipeline {
 
     const { width, height } = inputTexture;
     const { scale } = meta;
+    if (unshuffle && (width % 2 || height % 2)) throw new Error(`${name}: кадр ${width}×${height} — у половинной сетки нужны чётные стороны`);
+    if (unshuffle && (kernel === 'reference' || kernel === 'wino')) throw new Error(`${name}: у половинной сетки нет ядра ${kernel}`);
+    // Сетка, на которой считают слои.
+    const gridW = unshuffle ? width / 2 : width;
+    const gridH = unshuffle ? height / 2 : height;
     // У `wino` первый и последний слои — ядра `fast`, внутренние — Winograd.
     const wino = kernel === 'wino';
     const direct: CompactKernel = wino ? 'fast' : kernel;
     const [regionX, regionY] = kernelRegion(direct);
     // У всех слоёв одна сетка групп — один слот косвенного запуска на все.
     // Внутренним слоям Winograd — своя: их область вдвое уже.
-    this.launch = launcher(gate, Math.ceil(width / regionX), Math.ceil(height / regionY));
+    this.launch = launcher(gate, Math.ceil(gridW / regionX), Math.ceil(gridH / regionY));
     const winoLaunch = wino
       ? launcher(gate, Math.ceil(width / WINO_REGION[0]), Math.ceil(height / WINO_REGION[1]))
       : undefined;
@@ -95,7 +104,7 @@ export class CompactSR implements Anime4KPipeline {
     });
 
     const storage = GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST;
-    const featBytes = width * height * groups(meta.numFeat) * 8;
+    const featBytes = gridW * gridH * groups(meta.numFeat) * 8;
     const ping = device.createBuffer({ label: `${name}: ping`, size: featBytes, usage: storage });
     const pong = device.createBuffer({ label: `${name}: pong`, size: featBytes, usage: storage });
 
@@ -164,7 +173,7 @@ export class CompactSR implements Anime4KPipeline {
         size: 32,
         usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
       });
-      device.queue.writeBuffer(dims, 0, new Uint32Array([width, height, bases.w, bases.bias, bases.prelu, 0, 0, 0]));
+      device.queue.writeBuffer(dims, 0, new Uint32Array([gridW, gridH, bases.w, bases.bias, bases.prelu, 0, 0, 0]));
 
       const entries: GPUBindGroupEntry[] = [
         { binding: 0, resource: { buffer: dims } },
@@ -197,7 +206,7 @@ export class CompactSR implements Anime4KPipeline {
         code: inner
           ? winoLayerShader(layer)
           : layerShader({
-            kernel: direct, layer, first, tailScale: last ? scale : undefined, chroma,
+            kernel: direct, layer, first, tailScale: last ? scale : undefined, chroma, unshuffle,
           }),
       });
       // Раскладка 'auto' видит только привязки, которые шейдер читает, —

@@ -57,6 +57,12 @@ export interface CompactModelMeta {
   scale: number;
   bytes: number;
   layers: CompactLayerMeta[];
+  /**
+   * `SRVGGNetCompactU` (Э19): сеть считает на сетке вдвое реже кадра — вход
+   * разложен pixel-unshuffle 2×2 (канал c·4 + dy·2 + dx), выход —
+   * pixelshuffle ×(2·scale). Конвертер — `training/to_wgsl.py`.
+   */
+  unshuffle?: number;
   source?: string;
   license?: string;
 }
@@ -162,6 +168,8 @@ export interface LayerShaderOptions {
   tailScale?: number;
   /** Последний слой: цветность — из сглаженной цветности кадра, не от сети. */
   chroma?: boolean;
+  /** Сеть на половинной сетке (`SRVGGNetCompactU`), только быстрые ядра. */
+  unshuffle?: boolean;
 }
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
@@ -405,8 +413,9 @@ function fastMain(
  * (последний слой с `chroma`).
  */
 export function layerShader({
-  kernel, layer, first, tailScale, chroma = false,
+  kernel, layer, first, tailScale, chroma = false, unshuffle = false,
 }: LayerShaderOptions): string {
+  if (unshuffle) return unshuffleLayerShader({ kernel, layer, first, tailScale, chroma });
   const withChroma = Boolean(tailScale) && chroma;
   const inGroups = first ? 1 : layer.inGroups;
   const { threads } = geometry(kernel, Boolean(tailScale));
@@ -452,6 +461,180 @@ ${loadTile(first, threads[0] * threads[1] * threads[2], region, fast)}
 ${fast ? fastMain(layer, inGroups, kernel, tailScale, withChroma) : referenceMain(layer, inGroups, tailScale, withChroma)}
 }
 `;
+}
+
+// ——— Половинная сетка (`SRVGGNetCompactU`, Э19) ———
+//
+// Те же быстрые ядра (2×2 пикселя сетки на поток, mat4x4 × vec4, область
+// 32×8), но каналов больше: 48 — 12 групп. Выходные группы делят 4 потока по
+// z (по 3 группы на поток, как у SUC), а тайл всех входных групп в лимит
+// общей памяти 16 КБ не лезет — он грузится частями по ≤ 6 групп.
+
+const U_THREADS: [number, number, number] = [16, 4, 4];
+const U_BLOCK: [number, number] = [2, 2];
+/** Групп каналов в части тайла: (32 + 2) × (8 + 2) × 6 × 8 Б = 16 320 Б. */
+const U_TILE_GROUPS = 6;
+
+function unshuffleLayerShader({
+  kernel, layer, first, tailScale, chroma = false,
+}: Omit<LayerShaderOptions, 'unshuffle'>): string {
+  if (kernel !== 'fast' && kernel !== 'fast-f32acc') {
+    throw new Error(`Compact: половинная сетка есть только у ядер fast и fast-f32acc, не у ${kernel}`);
+  }
+  const withChroma = Boolean(tailScale) && chroma;
+  // Первый слой: 3 цвета × 4 пикселя 2×2 — группа на цвет.
+  const inGroups = first ? 3 : layer.inGroups;
+  const parts = Math.ceil(inGroups / U_TILE_GROUPS);
+  const chunk = inGroups / parts;
+  if (!Number.isInteger(chunk)) throw new Error(`Compact: ${inGroups} входных групп не делятся на ${parts} части`);
+  const outG = groups(layer.out);
+  const split = U_THREADS[2];
+  if (outG % split) throw new Error(`Compact: ${outG} выходных групп не делятся на ${split} потока`);
+  const mine = outG / split;
+  if (tailScale && (mine !== 3 || split !== 2 * tailScale)) {
+    throw new Error(`Compact: хвост половинной сетки ×${tailScale} — ${outG} выходных групп, нужно ${6 * tailScale}`);
+  }
+  // Хвост: группа = цвет·4 + строка shuffle, поток z берёт строку z всех трёх
+  // цветов — у него весь выход своих пикселей.
+  const og = (k: number) => (tailScale ? `${k * split}u + lid.z` : `lid.z * ${mine}u + ${k}u`);
+  const [rw, rh] = [U_THREADS[0] * U_BLOCK[0], U_THREADS[1] * U_BLOCK[1]];
+  const hw = rw + 2;
+  const hh = rh + 2;
+  const wide = kernel === 'fast-f32acc';
+  const acc = wide ? 'vec4f' : 'V';
+  const sum = wide ? 't' : 'a';
+  const px = range(U_BLOCK[0] * U_BLOCK[1]).map((j) => ({ dx: (j % U_BLOCK[0]) * U_THREADS[0], dy: Math.floor(j / U_BLOCK[0]) * U_THREADS[1] }));
+  const threads = U_THREADS[0] * U_THREADS[1] * U_THREADS[2];
+
+  const fill = first
+    ? `    if (inside) {
+      let p = vec2i(gx * 2, gy * 2);
+      let t0 = textureLoad(src, p, 0);
+      let t1 = textureLoad(src, p + vec2i(1, 0), 0);
+      let t2 = textureLoad(src, p + vec2i(0, 1), 0);
+      let t3 = textureLoad(src, p + vec2i(1, 1), 0);
+      tile[i] = V(f16(t0.r), f16(t1.r), f16(t2.r), f16(t3.r));
+      tile[HW * HH + i] = V(f16(t0.g), f16(t1.g), f16(t2.g), f16(t3.g));
+      tile[2u * HW * HH + i] = V(f16(t0.b), f16(t1.b), f16(t2.b), f16(t3.b));
+    } else {
+      for (var g = 0u; g < CHUNK; g++) { tile[g * HW * HH + i] = V(0.0); }
+    }`
+    : `    if (inside) {
+      let s = (u32(gy) * dims.width + u32(gx)) * IN_G + part;
+      for (var g = 0u; g < CHUNK; g++) { tile[g * HW * HH + i] = src[s + g]; }
+    } else {
+      for (var g = 0u; g < CHUNK; g++) { tile[g * HW * HH + i] = V(0.0); }
+    }`;
+
+  const lines = [
+    `  let baseX = i32(wg.x * ${rw}u) - 1;`,
+    `  let baseY = i32(wg.y * ${rh}u) - 1;`,
+    ...range(mine).flatMap((k) => px.map((_, j) => `  var a${k}_${j} = ${acc}(0.0);`)),
+    '  for (var part = 0u; part < IN_G; part += CHUNK) {',
+    `    for (var i = li; i < HW * HH; i += ${threads}u) {
+    let gx = baseX + i32(i % HW);
+    let gy = baseY + i32(i / HW);
+    let inside = gx >= 0 && gy >= 0 && gx < i32(dims.width) && gy < i32(dims.height);
+${fill}
+    }`,
+    '    workgroupBarrier();',
+    '    for (var tap = 0u; tap < 9u; tap++) {',
+    '      let ty = lid.y + tap / 3u;',
+    '      let tx = lid.x + tap % 3u;',
+    ...(wide ? range(mine).flatMap((k) => px.map((_, j) => `      var t${k}_${j} = V(0.0);`)) : []),
+    '      for (var g = 0u; g < CHUNK; g++) {',
+    ...px.map(({ dx, dy }, j) => `        let x${j} = tile[g * HW * HH + (ty + ${dy}u) * HW + tx + ${dx}u];`),
+    `        let w = (tap * IN_G + part + g) * ${outG}u;`,
+    ...range(mine).flatMap((k) => [
+      `        { let m = weights[w + ${og(k)}];`,
+      ...px.map((_, j) => `          ${sum}${k}_${j} += m * x${j};`),
+      '        }',
+    ]),
+    '      }',
+    ...(wide ? range(mine).flatMap((k) => px.map((_, j) => `      a${k}_${j} += vec4f(t${k}_${j});`)) : []),
+    '    }',
+    '    // Следующая часть перезапишет тайл — сначала все дочитывают эту.',
+    '    workgroupBarrier();',
+    '  }',
+  ];
+
+  px.forEach(({ dx, dy }, j) => {
+    lines.push(`  {
+    let ox = wg.x * ${rw}u + lid.x + ${dx}u;
+    let oy = wg.y * ${rh}u + lid.y + ${dy}u;
+    if (ox < dims.width && oy < dims.height) {`);
+    for (let k = 0; k < mine; k += 1) {
+      lines.push(`      var r${k} = a${k}_${j} + ${acc}(blob[dims.biasBase + ${og(k)}]);`);
+      if (layer.prelu) {
+        lines.push(`      r${k} = select(${acc}(blob[dims.preluBase + ${og(k)}]) * r${k}, r${k}, r${k} >= ${acc}(0.0));`);
+      }
+    }
+    if (tailScale) {
+      lines.push(storeTailU(tailScale, withChroma));
+    } else {
+      lines.push(`      let ob = (oy * dims.width + ox) * ${outG}u;`);
+      lines.push(...range(mine).map((k) => `      dst[ob + ${og(k)}] = V(r${k});`));
+    }
+    lines.push('    }\n  }');
+  });
+
+  return `enable f16;
+alias V = vec4<f16>;
+
+const HW: u32 = ${hw}u;
+const HH: u32 = ${hh}u;
+const IN_G: u32 = ${inGroups}u;
+const CHUNK: u32 = ${chunk}u;
+
+struct Dims { width: u32, height: u32, wBase: u32, biasBase: u32, preluBase: u32 }
+
+@group(0) @binding(0) var<uniform> dims: Dims;
+${first
+    ? '@group(0) @binding(1) var src: texture_2d<f32>;'
+    : '@group(0) @binding(1) var<storage, read> src: array<V>;'}
+${tailScale
+    ? '@group(0) @binding(2) var dst: texture_storage_2d<rgba16float, write>;'
+    : '@group(0) @binding(2) var<storage, read_write> dst: array<V>;'}
+@group(0) @binding(3) var<storage, read> blob: array<V>;
+${tailScale ? '@group(0) @binding(4) var orig: texture_2d<f32>;' : ''}
+@group(0) @binding(5) var<storage, read> weights: array<mat4x4<f16>>;
+${withChroma ? `@group(0) @binding(6) var chromaSampler: sampler;
+@group(0) @binding(7) var chroma: texture_2d<f32>;
+
+${WITH_CHROMA_WGSL}
+` : ''}
+var<workgroup> tile: array<V, ${hw * hh * chunk}>;
+
+@compute @workgroup_size(${U_THREADS.join(', ')})
+fn main(
+  @builtin(workgroup_id) wg: vec3u,
+  @builtin(local_invocation_id) lid: vec3u,
+  @builtin(local_invocation_index) li: u32,
+) {
+${lines.join('\n')}
+}
+`;
+}
+
+/**
+ * Хвост половинной сетки: pixelshuffle ×s (s = 2·scale, канал =
+ * цвет·s² + строка·s + столбец) — поток пишет строку `lid.z` блока s×s
+ * пикселя сетки, `r0..r2` — R, G, B этой строки по столбцам. Skip — кадр
+ * ближайшим соседом ×scale, как у SUC.
+ */
+function storeTailU(scale: number, chroma: boolean): string {
+  const s = 2 * scale;
+  const lines: string[] = [];
+  for (let col = 0; col < s; col += 1) {
+    const p = `vec2u(ox * ${s}u + ${col}u, oy * ${s}u + lid.z)`;
+    const rgb = `vec3f(vec3h(f16(r0[${col}]) + f16(c.r), f16(r1[${col}]) + f16(c.g), f16(r2[${col}]) + f16(c.b)))`;
+    const store = chroma
+      ? `let uv = (vec2f(p) + 0.5) / vec2f(f32(dims.width * ${s}u), f32(dims.height * ${s}u));`
+        + ` textureStore(dst, p, vec4f(withChroma(${rgb}, textureSampleLevel(chroma, chromaSampler, uv, 0.0).xy), 1.0));`
+      : `textureStore(dst, p, vec4f(saturate(${rgb}), 1.0));`;
+    lines.push(`      { let p = ${p}; let c = textureLoad(orig, vec2i(p / ${scale}u), 0); ${store} }`);
+  }
+  return lines.join('\n');
 }
 
 // ——— Winograd F(2×2, 3×3) для внутренних слоёв (ядро `wino`, Э16, Э18) ———
