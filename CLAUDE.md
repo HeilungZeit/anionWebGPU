@@ -3,7 +3,7 @@
 План, этапы и журнал замеров — [docs/PLAN.md](docs/PLAN.md). Начинать с него и
 отмечать чекбоксы там же.
 
-- Работаем в `main`, remote `origin` — https://github.com/HeilungZeit/anionWebGPU
+- Работаем в `main`, remote `origin` — https://github.com/anion-online/anionWebGPU
   (самостоятельный репозиторий, отвязан от форк-сети); `upstream` — оригинал
   (Anime4KWebBoost/Anime4K-WebGPU), только для сверки.
 - Релиз для anion — `scripts/release.sh <версия>` и `git push origin main v<версия>`:

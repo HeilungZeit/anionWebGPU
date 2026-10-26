@@ -103,7 +103,7 @@ npm run bench
 
 - [x] Клон, ветка `anion`, сборка, проверка совпадения с npm 1.0.0.
 - [x] Стенд `bench/` (замер по звеньям, сверка с эталоном).
-- [x] GitHub-форк и `origin`: https://github.com/HeilungZeit/anionWebGPU
+- [x] GitHub-форк и `origin`: https://github.com/anion-online/anionWebGPU
       (публичный).
 - [ ] Базовые цифры эталона на 2–3 машинах (Apple M, Intel iGPU, дискретная)
       → «Журнал замеров». **Без них остальные этапы не сравнить.**
@@ -122,7 +122,7 @@ npm run bench
       (пакет грузится только в браузере через `import()`).
 - [ ] Подключение в anion. Для разработки:
       `"anime4k-webgpu": "file:../anionWebGPU"`. Для деплоя —
-      git-зависимость `github:HeilungZeit/anionWebGPU#<тег>` со скриптом
+      git-зависимость `github:anion-online/anionWebGPU#<тег>` со скриптом
       `prepare: npm run build` (решение от 2026-10-06).
       Решение: bun не запускает `prepare` у зависимостей, поэтому тег
       указывает на коммит с уже собранным `lib/` (`scripts/release.sh`); сама
@@ -845,9 +845,9 @@ pixel-unshuffle: кадр 720p раскладывается 2×2 в 12 кана�
 
 ## Решения владельца (2026-10-06)
 
-1. **Где живёт форк**: публичный GitHub-форк `HeilungZeit/anionWebGPU` (переименован из `Anime4K-WebGPU`).
+1. **Где живёт форк**: публичный GitHub-форк `anion-online/anionWebGPU` (переименован из `Anime4K-WebGPU`).
 2. **Как anion тянет его на Vercel**: git-зависимость
-   `github:HeilungZeit/anionWebGPU#<тег>`, сборка через `prepare: npm run build`.
+   `github:anion-online/anionWebGPU#<тег>`, сборка через `prepare: npm run build`.
 3. **Целевое железо**: самое слабое — Apple M1 / современный iGPU (Iris Xe,
    Radeon 680M). Значит, Э5 не обязателен: хватить должно Э2 + Э4, а Э5 делать
    по замерам.

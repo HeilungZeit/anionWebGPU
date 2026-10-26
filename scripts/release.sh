@@ -6,7 +6,7 @@
 #   scripts/release.sh 1.1.0-anion.2   # version в package.json должна совпадать
 #   git push origin main v1.1.0-anion.2
 #
-# В anion: "anime4k-webgpu": "github:HeilungZeit/anionWebGPU#v1.1.0-anion.2"
+# В anion: "anime4k-webgpu": "github:anion-online/anionWebGPU#v1.1.0-anion.2"
 set -e
 VERSION=$1
 [ -n "$VERSION" ] || { echo "usage: scripts/release.sh <version>"; exit 1; }
