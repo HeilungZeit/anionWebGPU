@@ -1,6 +1,8 @@
-"""Дообучение SRVGGNetCompact (SuperUltraCompact, 24nf/8nc/×2) на порче Kodik.
+"""Дообучение SRVGGNetCompact (SuperUltraCompact, 24nf/8nc/×2) на порче Kodik
+и обучение с нуля своих сетей половинной сетки (CompactU, Э19).
 
     python train.py --init model.onnx --run runs/<имя> [--iters 30000]
+    python train.py --arch u48x7r --run runs/<имя> --teacher 1 --ink 8 [--data train128]
 
 Стартует с весов ONNX (AnimeJaNai V2 SUC — то, что сейчас в «Деталях»),
 учится на `data/train/{lq,gt}.npy` (`make_pairs.py`, грузятся в память), каждые `--every`
@@ -43,25 +45,73 @@ class Compact(nn.Module):
         return out + F.interpolate(x, scale_factor=self.scale, mode="nearest")
 
 
+class RepConv(nn.Module):
+    """Свёртка 3×3 на время обучения — с параллельной веткой 1×1 и, с
+    `identity`, тождеством, где каналов на входе и выходе поровну
+    (перепараметризация, как RepVGG без BN). `fuse()` сливает ветки в одну
+    Conv2d 3×3 с тем же выходом: ядро и цена кадра не меняются.
+
+    Тождество в каждом внутреннем слое без нормировки раздувает сигнал: на
+    старте u48x7 давала 18.6 дБ против 27 у обычной и к 10k итераций
+    отставала на 0.5 дБ (Э19) — по умолчанию его нет."""
+
+    def __init__(self, cin: int, cout: int, identity: bool):
+        super().__init__()
+        self.conv3 = nn.Conv2d(cin, cout, 3, padding=1)
+        self.conv1 = nn.Conv2d(cin, cout, 1)
+        self.identity = identity and cin == cout
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        y = self.conv3(x) + self.conv1(x)
+        return y + x if self.identity else y
+
+    def fuse(self) -> nn.Conv2d:
+        conv = nn.Conv2d(self.conv3.in_channels, self.conv3.out_channels, 3, padding=1)
+        with torch.no_grad():
+            weight = self.conv3.weight.clone()
+            weight[:, :, 1, 1] += self.conv1.weight[:, :, 0, 0]
+            if self.identity:
+                channels = torch.arange(weight.shape[0])
+                weight[channels, channels, 1, 1] += 1
+            conv.weight.copy_(weight)
+            conv.bias.copy_(self.conv3.bias + self.conv1.bias)
+        return conv
+
+
 class CompactU(nn.Module):
     """Compact на половинной сетке (Э19): вход разложен pixel-unshuffle 2×2 в
     12 каналов, свёртки считают 360p вместо 720p, последний слой отдаёт 3·4²
     канала — pixelshuffle ×4 даёт сразу ×2 к входу. Умножений на пиксель
-    источника — C²·9/4 на слой против 24²·9 у SUC, поле зрения вдвое шире."""
+    источника — C²·9/4 на слой против 24²·9 у SUC, поле зрения вдвое шире.
+    С `rep` свёртки — `RepConv` (`rep_identity` — с тождеством); `fused()` —
+    та же сеть с обычными свёртками."""
 
-    def __init__(self, num_feat: int = 48, num_conv: int = 7, scale: int = 2):
+    def __init__(
+        self, num_feat: int = 48, num_conv: int = 7, scale: int = 2, rep: bool = False, rep_identity: bool = False
+    ):
         super().__init__()
         self.scale = scale
-        layers: list[nn.Module] = [nn.Conv2d(12, num_feat, 3, padding=1), nn.PReLU(num_feat)]
+        self.num_feat, self.num_conv = num_feat, num_conv
+
+        def conv(cin: int, cout: int, identity: bool) -> nn.Module:
+            return RepConv(cin, cout, identity and rep_identity) if rep else nn.Conv2d(cin, cout, 3, padding=1)
+
+        layers: list[nn.Module] = [conv(12, num_feat, False), nn.PReLU(num_feat)]
         for _ in range(num_conv):
-            layers += [nn.Conv2d(num_feat, num_feat, 3, padding=1), nn.PReLU(num_feat)]
-        layers.append(nn.Conv2d(num_feat, 3 * (2 * scale) ** 2, 3, padding=1))
+            layers += [conv(num_feat, num_feat, True), nn.PReLU(num_feat)]
+        layers.append(conv(num_feat, 3 * (2 * scale) ** 2, False))
         self.body = nn.Sequential(*layers)
         # С нуля выход начинается почти с skip: иначе случайный хвост первые
         # тысячи итераций учит только погасить себя.
         with torch.no_grad():
-            layers[-1].weight.mul_(0.1)
-            layers[-1].bias.zero_()
+            for tail in [layers[-1].conv3, layers[-1].conv1] if rep else [layers[-1]]:
+                tail.weight.mul_(0.1)
+                tail.bias.zero_()
+
+    def fused(self) -> "CompactU":
+        plain = CompactU(self.num_feat, self.num_conv, self.scale)
+        plain.body = nn.Sequential(*[m.fuse() if isinstance(m, RepConv) else m for m in self.body])
+        return plain
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         out = F.pixel_shuffle(self.body(F.pixel_unshuffle(x, 2)), 2 * self.scale)
@@ -70,11 +120,30 @@ class CompactU(nn.Module):
 
 def build(arch: str) -> nn.Module:
     """`suc` — SRVGGNetCompact 24nf/8nc; `u<C>x<N>` — CompactU с C каналами и
-    N внутренними свёртками."""
+    N внутренними свёртками, `u<C>x<N>r` — она же с `RepConv` (3×3 + 1×1) на
+    обучение, `u<C>x<N>ri` — ещё и с тождеством."""
     if arch == "suc":
         return Compact()
-    feat, conv = arch.removeprefix("u").split("x")
-    return CompactU(int(feat), int(conv))
+    base, _, rep = arch.removeprefix("u").partition("r")
+    feat, conv = base.split("x")
+    return CompactU(int(feat), int(conv), rep=arch != base and "r" in arch, rep_identity=rep == "i")
+
+
+def deployed(model: nn.Module) -> nn.Module:
+    """Сеть, как она пойдёт в ядро: у `RepConv` ветки слиты."""
+    return model.fused() if isinstance(model, CompactU) and any(isinstance(m, RepConv) for m in model.body) else model
+
+
+def onnx_compact(path: Path) -> Compact:
+    """SRVGGNetCompact любого размера из ONNX (SUC, Compact и т. п.): число
+    каналов и свёрток — по графу."""
+    graph = onnx.load(str(path)).graph
+    init = {t.name: t for t in graph.initializer}
+    convs = [n for n in graph.node if n.op_type == "Conv"]
+    feat = init[convs[0].input[1]].dims[0]
+    model = Compact(feat, len(convs) - 2)
+    load_onnx(model, path)
+    return model
 
 
 def load_any(path: Path) -> nn.Module:
@@ -182,12 +251,18 @@ def export(model: Compact, path: Path) -> None:
 def main() -> None:
     p = argparse.ArgumentParser()
     p.add_argument("--init", type=Path, help="ONNX SUC, с которого начать; без него — с нуля")
-    p.add_argument("--arch", default="suc", help="suc или u<C>x<N> (CompactU)")
+    p.add_argument("--arch", default="suc", help="suc, u<C>x<N> (CompactU) или u<C>x<N>r (с RepConv)")
     p.add_argument(
         "--teacher-model",
         type=Path,
         default=DATA / "init" / "2x_AnimeJaNai_V2_SuperUltraCompact_100k.onnx",
-        help="ONNX SUC учителя (по умолчанию — AnimeJaNai V2 SUC)",
+        help="ONNX SRVGGNetCompact учителя любого размера (по умолчанию — AnimeJaNai V2 SUC)",
+    )
+    p.add_argument("--data", default="train", help="каталог пар в data/ (`make_pairs.py --out`)")
+    p.add_argument(
+        "--teacher-cache",
+        help="npy в каталоге пар с выходами учителя на чистом входе (`teacher_cache.py`): "
+        "тяжёлый учитель не считается на каждом шаге",
     )
     p.add_argument("--run", type=Path, required=True)
     p.add_argument("--iters", type=int, default=30_000)
@@ -228,9 +303,11 @@ def main() -> None:
     model = model.to(device)
     if args.start:
         model.load_state_dict(torch.load(args.start, map_location=device))
-    (args.run / "arch.txt").write_text(args.arch + "\n")
-    teacher = Compact().to(device).eval().requires_grad_(False)
-    load_onnx(teacher, args.teacher_model)
+    # Чекпойнты — уже слитые (`deployed`): их берут to_wgsl.py, compare.py и
+    # pilot_eval.py; неслитое состояние для продолжения — `last_train.pt`.
+    plain_arch = args.arch.partition("r")[0]
+    (args.run / "arch.txt").write_text(plain_arch + "\n")
+    teacher = onnx_compact(args.teacher_model).to(device).eval().requires_grad_(False)
     origin = args.start or args.init
     params = sum(p.numel() for p in model.parameters())
     say(f"{args.arch} ({params} параметров), старт с {origin.name if origin else 'нуля'}, "
@@ -241,9 +318,11 @@ def main() -> None:
     # С `--mmap` — memmap: параллельные прогоны делят кэш страниц, а не
     # держат по копии.
     mode = "r" if args.mmap else None
-    lq_all = np.load(DATA / "train" / "lq.npy", mmap_mode=mode)
-    gt_all = np.load(DATA / "train" / "gt.npy", mmap_mode=mode)
-    say(f"пар: {len(lq_all)}, устройство: {device}")
+    lq_all = np.load(DATA / args.data / "lq.npy", mmap_mode=mode)
+    gt_all = np.load(DATA / args.data / "gt.npy", mmap_mode=mode)
+    cached = np.load(DATA / args.data / args.teacher_cache, mmap_mode=mode) if args.teacher_cache else None
+    say(f"пар: {len(lq_all)} ({args.data}), учитель {args.teacher_model.name}"
+        f"{', кэш ' + args.teacher_cache if cached is not None else ''}, устройство: {device}")
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.iters, eta_min=args.lr / 100)
@@ -256,13 +335,12 @@ def main() -> None:
         idx = np.sort(rng.choice(len(lq_all), args.batch, replace=False))
         lq = to_tensor(lq_all[idx], device)
         gt = to_tensor(gt_all[idx], device)
+        pre = to_tensor(cached[idx], device) if cached is not None else None
         # Повороты и отражения: порча x264 от них не меняется по смыслу.
-        if rng.random() < 0.5:
-            lq, gt = lq.flip(-1), gt.flip(-1)
-        if rng.random() < 0.5:
-            lq, gt = lq.flip(-2), gt.flip(-2)
-        if rng.random() < 0.5:
-            lq, gt = lq.transpose(-1, -2), gt.transpose(-1, -2)
+        for flip in (lambda t: t.flip(-1), lambda t: t.flip(-2), lambda t: t.transpose(-1, -2)):
+            if rng.random() < 0.5:
+                lq, gt = flip(lq), flip(gt)
+                pre = flip(pre) if pre is not None else None
 
         out = model(lq)
         loss = 0.0
@@ -271,7 +349,7 @@ def main() -> None:
             loss += (1 - args.teacher) * (wl1(out, gt, w) + args.edge * wl1(sobel(out), sobel(gt), w))
         if args.teacher > 0:
             with torch.no_grad():
-                target = teacher(clean_input(gt))
+                target = pre if pre is not None else teacher(clean_input(gt))
                 w = ink_weight(target, args.ink) if args.ink else None
             loss += args.teacher * (wl1(out, target, w) + args.edge * wl1(sobel(out), sobel(target), w))
         opt.zero_grad(set_to_none=True)
@@ -288,15 +366,18 @@ def main() -> None:
             vs_gt, vs_teacher = validate(model, teacher, device)
             # «Лучший» — по той цели, к которой модель и тянется.
             value = vs_teacher * args.teacher + vs_gt * (1 - args.teacher)
-            torch.save(model.state_dict(), args.run / "last.pt")
-            torch.save(model.state_dict(), args.run / f"it{it}.pt")
+            state = deployed(model).state_dict()
+            torch.save(state, args.run / "last.pt")
+            torch.save(state, args.run / f"it{it}.pt")
+            torch.save(model.state_dict(), args.run / "last_train.pt")
             mark = ""
             if value > best:
                 best = value
-                torch.save(model.state_dict(), args.run / "best.pt")
+                torch.save(state, args.run / "best.pt")
                 mark = "  ← лучший"
             say(f"{it:>6}  val PSNR к эталону {vs_gt:.3f} дБ, к учителю {vs_teacher:.3f} дБ{mark}")
 
+    model = build(plain_arch)
     model.load_state_dict(torch.load(args.run / "best.pt"))
     export(model, args.run / "model.onnx")
     say(f"лучшая цель {best:.3f} дБ, экспорт: {args.run / 'model.onnx'}")
