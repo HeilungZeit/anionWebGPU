@@ -70,3 +70,4 @@ bench/lab/
 training/.venv/
 training/data/
 training/runs/
+training/__pycache__/
