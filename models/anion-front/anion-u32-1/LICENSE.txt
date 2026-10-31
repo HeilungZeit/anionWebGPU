@@ -1,0 +1,25 @@
+Своя нейросеть Anion U32-1 («Сильное улучшение»; 32 канала, 10 свёрток), обученная с нуля с
+2x_AnimeJaNai_V2_SuperUltraCompact в роли учителя, — веса.
+
+Учитель: 2x_AnimeJaNai_V2_SuperUltraCompact, автор the-database,
+https://github.com/the-database/mpv-upscale-2x_animejanai
+(релиз 2.0.0, архив 2x_AnimeJaNai_V2_ModelsOnly.zip,
+файл 2x_AnimeJaNai_V2_SuperUltraCompact_100k.onnx).
+Лицензия учителя: CC BY-NC-SA 4.0,
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+Архитектура своя: SRVGGNetCompact на сетке вдвое реже кадра
+(pixel-unshuffle 2×2 на входе, pixelshuffle ×4 на выходе), 32 канала, 10 внутренних свёрток — на треть дешевле исходной SUC.
+Сеть учится на кадрах, испорченных как у Kodik (энкод x264, смягчение,
+двойное сжатие), выдавать то же, что учитель на чистом кадре, с весом
+штриха. Обучение — на кадрах APISR Dataset
+(https://huggingface.co/datasets/HikariDawn/APISR_Dataset, только личное и
+академическое использование). Подробности — anionWebGPU, docs/PLAN.md,
+этап Э19.
+
+Как производная от учителя, эти веса распространяются под той же лицензией
+CC BY-NC-SA 4.0. Использование только некоммерческое.
+
+weights.bin — веса (float16) в порядке чтения шейдера, переложенные скриптом
+anionWebGPU/training/to_wgsl.py; model.json — их описание
+(arch SRVGGNetCompactU).

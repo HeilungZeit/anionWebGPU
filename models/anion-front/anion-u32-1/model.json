@@ -1,0 +1,123 @@
+{
+  "arch": "SRVGGNetCompactU",
+  "license": "CC-BY-NC-SA-4.0",
+  "numFeat": 32,
+  "numConv": 10,
+  "scale": 2,
+  "unshuffle": 2,
+  "pack": 4,
+  "dtype": "float16",
+  "source": "scratch-u32x10/best.pt",
+  "sha256": "c9ac144831f4d04b6f61e2c8c1108a698b2705596ede7420d6075c8a335972aa",
+  "bytes": 220384,
+  "layers": [
+    {
+      "name": "body.0",
+      "offset": 0,
+      "in": 12,
+      "out": 32,
+      "inGroups": 3,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.2",
+      "offset": 7040,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.4",
+      "offset": 25600,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.6",
+      "offset": 44160,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.8",
+      "offset": 62720,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.10",
+      "offset": 81280,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.12",
+      "offset": 99840,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.14",
+      "offset": 118400,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.16",
+      "offset": 136960,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.18",
+      "offset": 155520,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.20",
+      "offset": 174080,
+      "in": 32,
+      "out": 32,
+      "inGroups": 8,
+      "outGroups": 8,
+      "prelu": true
+    },
+    {
+      "name": "body.22",
+      "offset": 192640,
+      "in": 32,
+      "out": 48,
+      "inGroups": 8,
+      "outGroups": 12,
+      "prelu": false
+    }
+  ]
+}

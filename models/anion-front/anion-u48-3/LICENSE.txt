@@ -1,0 +1,32 @@
+Своя нейросеть Anion U48-3 («Максимальное улучшение», сменила U48-2;
+48 каналов, 7 свёрток), обученная с нуля на составной цели из нескольких
+учителей, — веса.
+
+Цель обучения собрана из выходов моделей по полосам частот:
+- низ — 2x_AnimeJaNai_V2_Compact, автор the-database,
+  https://github.com/the-database/mpv-upscale-2x_animejanai
+  (файл 2x_AnimeJaNai_V2_Compact_36k.onnx);
+- средняя полоса — 2x_AnimeJaNai_SD_V1beta34_Compact (strong), тот же автор
+  и репозиторий (релиз AnimeJaNai V3.1);
+- верх (резкие края линий, вес 0.5) — APISR 2x RRDB GAN, автор Kiteretsu77,
+  https://github.com/Kiteretsu77/APISR;
+- штрих — своя сеть Anion U48-2 (на кадрах, испорченных как у Kodik).
+Лицензии: AnimeJaNai — CC BY-NC-SA 4.0,
+https://creativecommons.org/licenses/by-nc-sa/4.0/; APISR — GPL-3.0,
+https://www.gnu.org/licenses/gpl-3.0.html.
+
+Архитектура своя: SRVGGNetCompact на сетке вдвое реже кадра
+(pixel-unshuffle 2×2 на входе, pixelshuffle ×4 на выходе), 48 каналов,
+7 внутренних свёрток — по цене кадра как U48-2. Сеть учится на кадрах,
+испорченных как у Kodik (энкод x264, смягчение, двойное сжатие), выдавать
+составную цель, с весом штриха. Обучение — на кадрах APISR Dataset
+(https://huggingface.co/datasets/HikariDawn/APISR_Dataset, только личное и
+академическое использование). Подробности — anionWebGPU, docs/PLAN.md,
+этап Э20.
+
+Как производная от учителей AnimeJaNai, эти веса распространяются под
+лицензией CC BY-NC-SA 4.0. Использование только некоммерческое.
+
+weights.bin — веса (float16) в порядке чтения шейдера, переложенные скриптом
+anionWebGPU/training/to_wgsl.py; model.json — их описание
+(arch SRVGGNetCompactU).

@@ -1,0 +1,96 @@
+{
+  "arch": "SRVGGNetCompactU",
+  "license": "",
+  "numFeat": 48,
+  "numConv": 7,
+  "scale": 2,
+  "unshuffle": 2,
+  "pack": 4,
+  "dtype": "float16",
+  "source": "u48r-csdaulq/it100000.pt",
+  "sha256": "62655ec6ee70f486038c6d74d3a3ca716fa5402db20cc0f424151d08fddfe175",
+  "bytes": 343776,
+  "layers": [
+    {
+      "name": "body.0",
+      "offset": 0,
+      "in": 12,
+      "out": 48,
+      "inGroups": 3,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.2",
+      "offset": 10560,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.4",
+      "offset": 52224,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.6",
+      "offset": 93888,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.8",
+      "offset": 135552,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.10",
+      "offset": 177216,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.12",
+      "offset": 218880,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.14",
+      "offset": 260544,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": true
+    },
+    {
+      "name": "body.16",
+      "offset": 302208,
+      "in": 48,
+      "out": 48,
+      "inGroups": 12,
+      "outGroups": 12,
+      "prelu": false
+    }
+  ]
+}
