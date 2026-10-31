@@ -60,12 +60,17 @@
           <option value="kodik-mix75">0.75 JaNai V2 + 0.25 ink8 (фон, Э17)</option>
           <option value="u48x7">u48x7 — половинная сетка, ≈ SUC (Э19)</option>
           <option value="u32x10">u32x10 — половинная сетка, 0.6 SUC (Э19)</option>
+          <option value="u48-3">U48-3 — «Максимальное» в anion (Э20)</option>
+          <option value="u48-restore">U48-3 + Restore внутри — дистилляция (Э23)</option>
+          <option value="u32-restore">U32 + Restore внутри — «Сильное» (Э23)</option>
         </select></label>
       <label>цвет «Деталей»
         <select id="compactChroma">
           <option value="2">сглаженный σ2 (Э12, по умолчанию)</option>
           <option value="0">от сети (до Э12)</option>
         </select></label>
+      <label>Restore «Деталей» (Э23)
+        <select id="compactRestore"><option value="">нет</option><option value="before">до сети</option><option value="after">после (как в CA)</option></select></label>
       <label><input type="checkbox" id="deband"> дебандинг «Деталей» (Э21):
         порог <input type="number" id="debandThreshold" value="2" min="0" step="0.25" style="width:4em">,
         радиус <input type="number" id="debandRange" value="16" min="0" step="1" style="width:3em">,

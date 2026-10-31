@@ -80,11 +80,12 @@ export class CompactSR implements Anime4KPipeline {
 
     const { width, height } = inputTexture;
     const { scale } = meta;
-    if (unshuffle && (width % 2 || height % 2)) throw new Error(`${name}: кадр ${width}×${height} — у половинной сетки нужны чётные стороны`);
     if (unshuffle && (kernel === 'reference' || kernel === 'wino')) throw new Error(`${name}: у половинной сетки нет ядра ${kernel}`);
     // Сетка, на которой считают слои.
-    const gridW = unshuffle ? width / 2 : width;
-    const gridH = unshuffle ? height / 2 : height;
+    // Нечётная сторона (854×480 у Kodik бывает и 853×480): лишний столбец
+    // сетки читает край кадра повтором, выход за кадром не пишется.
+    const gridW = unshuffle ? Math.ceil(width / 2) : width;
+    const gridH = unshuffle ? Math.ceil(height / 2) : height;
     // У `wino` первый и последний слои — ядра `fast`, внутренние — Winograd.
     const wino = kernel === 'wino';
     const direct: CompactKernel = wino ? 'fast' : kernel;

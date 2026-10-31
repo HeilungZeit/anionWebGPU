@@ -509,10 +509,13 @@ function unshuffleLayerShader({
   const fill = first
     ? `    if (inside) {
       let p = vec2i(gx * 2, gy * 2);
+      // При нечётной стороне последний столбец (строка) 2×2 выходит за кадр —
+      // повтор края; при чётной min ничего не меняет.
+      let last = vec2i(textureDimensions(src)) - 1;
       let t0 = textureLoad(src, p, 0);
-      let t1 = textureLoad(src, p + vec2i(1, 0), 0);
-      let t2 = textureLoad(src, p + vec2i(0, 1), 0);
-      let t3 = textureLoad(src, p + vec2i(1, 1), 0);
+      let t1 = textureLoad(src, min(p + vec2i(1, 0), last), 0);
+      let t2 = textureLoad(src, min(p + vec2i(0, 1), last), 0);
+      let t3 = textureLoad(src, min(p + vec2i(1, 1), last), 0);
       tile[i] = V(f16(t0.r), f16(t1.r), f16(t2.r), f16(t3.r));
       tile[HW * HH + i] = V(f16(t0.g), f16(t1.g), f16(t2.g), f16(t3.g));
       tile[2u * HW * HH + i] = V(f16(t0.b), f16(t1.b), f16(t2.b), f16(t3.b));
@@ -629,10 +632,12 @@ function storeTailU(scale: number, chroma: boolean): string {
     const p = `vec2u(ox * ${s}u + ${col}u, oy * ${s}u + lid.z)`;
     const rgb = `vec3f(vec3h(f16(r0[${col}]) + f16(c.r), f16(r1[${col}]) + f16(c.g), f16(r2[${col}]) + f16(c.b)))`;
     const store = chroma
-      ? `let uv = (vec2f(p) + 0.5) / vec2f(f32(dims.width * ${s}u), f32(dims.height * ${s}u));`
+      ? 'let uv = (vec2f(p) + 0.5) / vec2f(textureDimensions(dst));'
         + ` textureStore(dst, p, vec4f(withChroma(${rgb}, textureSampleLevel(chroma, chromaSampler, uv, 0.0).xy), 1.0));`
       : `textureStore(dst, p, vec4f(saturate(${rgb}), 1.0));`;
-    lines.push(`      { let p = ${p}; let c = textureLoad(orig, vec2i(p / ${scale}u), 0); ${store} }`);
+    // За кадром (нечётная сторона) не пишем: textureStore там и так ничего не
+    // делает, но textureLoad из orig вне кадра — неопределённое значение.
+    lines.push(`      { let p = ${p}; if (all(p < textureDimensions(dst))) { let c = textureLoad(orig, vec2i(p / ${scale}u), 0); ${store} } }`);
   }
   return lines.join('\n');
 }

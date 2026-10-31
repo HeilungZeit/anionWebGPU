@@ -2,6 +2,7 @@ import { Downscale, FrameGate } from '../../helpers';
 import { Deband, DebandParams } from '../../denoise/Deband';
 import { Anime4KPipeline, Anime4KPresetPipelineDescriptor, whenReady } from '../../interfaces';
 import { CompactKernel, CompactModelData, CompactSR } from '../../compact';
+import { CNNM } from '../../restore';
 
 export interface ModeCompactPresetPipelineDescriptor extends Anime4KPresetPipelineDescriptor {
   /** Веса и описание из конвертера anion-dl; в пакет не входят (лицензия NC). */
@@ -26,6 +27,12 @@ export interface ModeCompactPresetPipelineDescriptor extends Anime4KPresetPipeli
    * со своими. По умолчанию выключен: выход тот же, что в 1.x.
    */
   deband?: boolean | DebandParams;
+  /**
+   * Restore CNNM из «С очисткой» (Э23) — снятие размытия, текст и линии
+   * плотнее: `before` — на входе сети, `after` — в разрешении цели, как в
+   * ModeCA. По умолчанию нет.
+   */
+  restore?: 'before' | 'after';
 }
 
 /**
@@ -48,7 +55,7 @@ export class ModeCompact implements Anime4KPipeline {
 
   constructor({
     device, inputTexture, nativeDimensions, targetDimensions, model, kernel,
-    skipUnchanged = false, unchangedThreshold = 0, chromaSigma = 2, deband,
+    skipUnchanged = false, unchangedThreshold = 0, chromaSigma = 2, deband, restore,
   }: ModeCompactPresetPipelineDescriptor) {
     let currentTexture = inputTexture;
     if (targetDimensions.width > 1.2 * nativeDimensions.width
@@ -70,6 +77,12 @@ export class ModeCompact implements Anime4KPipeline {
         currentTexture = this.deband.getOutputTexture();
       }
 
+      if (restore === 'before') {
+        const cnnm = new CNNM({ device, inputTexture: currentTexture, gate });
+        this.pipelines.push(cnnm);
+        currentTexture = cnnm.getOutputTexture();
+      }
+
       const upscale = new CompactSR({
         device, inputTexture: currentTexture, model, kernel, gate, chromaSigma,
       });
@@ -83,6 +96,12 @@ export class ModeCompact implements Anime4KPipeline {
         });
         this.pipelines.push(downscale);
         currentTexture = downscale.getOutputTexture();
+      }
+
+      if (restore === 'after') {
+        const cnnm = new CNNM({ device, inputTexture: currentTexture, gate });
+        this.pipelines.push(cnnm);
+        currentTexture = cnnm.getOutputTexture();
       }
     }
     this.outputTexture = currentTexture;

@@ -23,6 +23,8 @@ const SCENARIOS = [
   { id: '720-1080', src: [1280, 720], dst: [1920, 1080], checked: true },
   { id: '720-1440', src: [1280, 720], dst: [2560, 1440], checked: true },
   { id: '480-1080', src: [854, 480], dst: [1920, 1080], checked: true },
+  // Kodik отдаёт и 853×480: нечётная сторона у половинной сетки (Э24).
+  { id: '853-1080', src: [853, 480], dst: [1706, 960], checked: false },
   { id: '1080-1080', src: [1920, 1080], dst: [1920, 1080], checked: false },
   { id: '720-2880', src: [1280, 720], dst: [3840, 2160], checked: false },
 ];
@@ -107,6 +109,7 @@ async function presetOptions(mode, precision) {
     model: await loadCompactModel($('compactWeights').value),
     kernel: $('compactKernel').value,
     chromaSigma: Number($('compactChroma').value),
+    restore: $('compactRestore').value || undefined,
     deband: $('deband').checked && {
       threshold: Number($('debandThreshold').value),
       range: Number($('debandRange').value),
@@ -457,6 +460,7 @@ async function run() {
             $('compactKernel').value,
             weights !== COMPACT_REFERENCE_WEIGHTS ? weights : '',
             `σ${$('compactChroma').value}`,
+            $('compactRestore').value ? `restore-${$('compactRestore').value}` : '',
             $('deband').checked ? `deband${$('debandThreshold').value}r${$('debandRange').value}i${$('debandIterations').value}` : '',
           ].filter(Boolean).join('/')
           : (denoiseModel !== 'VL' && denoiseModel) || '';
