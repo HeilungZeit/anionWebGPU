@@ -3,6 +3,7 @@
 
     python train.py --init model.onnx --run runs/<имя> [--iters 30000]
     python train.py --arch u48x7r --run runs/<имя> --teacher 1 --ink 8 [--data train128]
+    python train.py --arch u48x7 --from runs/<сеть>/it100000.pt … --text train128-text  # надписи, Э22
 
 Стартует с весов ONNX (AnimeJaNai V2 SUC — то, что сейчас в «Деталях»),
 учится на `data/train/{lq,gt}.npy` (`make_pairs.py`, грузятся в память), каждые `--every`
@@ -204,6 +205,25 @@ def ink_weight(target: torch.Tensor, ink: float) -> torch.Tensor:
     return 1 + ink * ((depth - 10) / 10).clamp(0, 1)
 
 
+def gauss(y: torch.Tensor, sigma: float) -> torch.Tensor:
+    r = math.ceil(3 * sigma)
+    x = torch.arange(-r, r + 1, device=y.device, dtype=y.dtype)
+    k = torch.exp(-(x**2) / (2 * sigma**2))
+    k = (k / k.sum()).view(1, 1, 1, -1)
+    y = F.conv2d(F.pad(y, (r, r, 0, 0), mode="replicate"), k)
+    return F.conv2d(F.pad(y, (0, 0, r, r), mode="replicate"), k.transpose(-1, -2))
+
+
+def band_energy(x: torch.Tensor) -> torch.Tensor:
+    """Сколько фактуры в участке: СКО полосы σ0.75–3 по яркости в окнах 16×16
+    с шагом 8. Сравнение этих чисел, а не пикселей, не требует попасть в фазу
+    фактуры — L1 по пикселям на неуверенном входе даёт среднее, «акварель»."""
+    r, g, b = x.unbind(-3)
+    y = (0.2126 * r + 0.7152 * g + 0.0722 * b)[:, None]
+    band = gauss(y, 0.75) - gauss(y, 3.0)
+    return (F.avg_pool2d(band**2, 16, stride=8) + 1e-8).sqrt()
+
+
 def wl1(a: torch.Tensor, b: torch.Tensor, w: torch.Tensor | None) -> torch.Tensor:
     return F.l1_loss(a, b) if w is None else ((a - b).abs() * w).sum() / (w.sum() * a.shape[-3])
 
@@ -232,6 +252,21 @@ def validate(model: Compact, teacher: Compact, device: torch.device) -> tuple[fl
             vs_teacher.append(psnr(out, teacher(clean_input(gt)).clamp(0, 1)))
     model.train()
     return float(np.mean(vs_gt)), float(np.mean(vs_teacher))
+
+
+def validate_text(model: nn.Module, text: dict[str, np.ndarray], device: torch.device) -> float:
+    """PSNR на надписях (Э22): пары с проверочными шрифтами, только по маске."""
+    model.eval()
+    se, weight = 0.0, 0.0
+    with torch.no_grad():
+        for i in range(0, len(text["val_lq"]), 16):
+            out = model(to_tensor(text["val_lq"][i : i + 16], device)).clamp(0, 1)
+            gt = to_tensor(text["val_gt"][i : i + 16], device)
+            m = torch.from_numpy(text["val_mask"][i : i + 16]).to(device).float()[:, None] / 255
+            se += (((out - gt) ** 2) * m).sum().item()
+            weight += m.sum().item() * 3
+    model.train()
+    return 10 * math.log10(weight / se)
 
 
 def export(model: Compact, path: Path) -> None:
@@ -282,6 +317,24 @@ def main() -> None:
         default=0.0,
         help="добавочный вес L1 на штрихе цели (линии, буквы): против их высветления",
     )
+    p.add_argument(
+        "--text",
+        help="каталог пар с надписями в data/ (`text_pairs.py`): своя цель — чёткий эталон на тексте; "
+        "нужен --teacher-cache",
+    )
+    p.add_argument("--text-share", type=float, default=0.2, help="доля батча из пар с надписями")
+    p.add_argument(
+        "--text-weight",
+        type=float,
+        default=1.0,
+        help="вес L1 на маске надписи: без него надписи — ~2%% пикселей батча, и сеть их не замечает (Э22)",
+    )
+    p.add_argument(
+        "--texture",
+        type=float,
+        default=0.0,
+        help="вес L1 между энергиями полосы σ0.75–3 по участкам выхода и эталона (band_energy): против «акварели»",
+    )
     p.add_argument("--from", dest="start", type=Path, help="начать с чекпойнта .pt вместо --init")
     p.add_argument("--every", type=int, default=2_000)
     p.add_argument("--mmap", action="store_true", help="данные через memmap, не в память")
@@ -323,6 +376,17 @@ def main() -> None:
     cached = np.load(DATA / args.data / args.teacher_cache, mmap_mode=mode) if args.teacher_cache else None
     say(f"пар: {len(lq_all)} ({args.data}), учитель {args.teacher_model.name}"
         f"{', кэш ' + args.teacher_cache if cached is not None else ''}, устройство: {device}")
+    text = None
+    n_text = 0
+    if args.text:
+        if cached is None:
+            raise SystemExit("--text: цель снаружи надписей — из кэша, нужен --teacher-cache")
+        text = {k: np.load(DATA / args.text / f"{k}.npy")
+                for k in ("lq", "gt", "target", "mask", "val_lq", "val_gt", "val_mask")}
+        n_text = round(args.batch * args.text_share)
+        say(f"пар с надписями: {len(text['lq'])} ({args.text}), в батче {n_text} из {args.batch}; "
+            "текст в логе — PSNR по маске надписи на проверочных шрифтах")
+        say(f"текст {validate_text(model, text, device):.3f} дБ")
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, betas=(0.9, 0.99))
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, args.iters, eta_min=args.lr / 100)
@@ -330,17 +394,28 @@ def main() -> None:
     best = -1.0
     started = time.time()
     running = 0.0
+    texture_running = 0.0
 
     for it in range(1, args.iters + 1):
-        idx = np.sort(rng.choice(len(lq_all), args.batch, replace=False))
+        idx = np.sort(rng.choice(len(lq_all), args.batch - n_text, replace=False))
         lq = to_tensor(lq_all[idx], device)
         gt = to_tensor(gt_all[idx], device)
         pre = to_tensor(cached[idx], device) if cached is not None else None
+        boost = None
+        if text is not None:
+            tidx = rng.choice(len(text["lq"]), n_text, replace=False)
+            lq = torch.cat([lq, to_tensor(text["lq"][tidx], device)])
+            gt = torch.cat([gt, to_tensor(text["gt"][tidx], device)])
+            pre = torch.cat([pre, to_tensor(text["target"][tidx], device)])
+            mask = torch.from_numpy(text["mask"][tidx]).to(device).float()[:, None] / 255
+            boost = torch.cat([torch.ones_like(mask[:1]).expand(len(idx), -1, -1, -1),
+                               1 + (args.text_weight - 1) * mask])
         # Повороты и отражения: порча x264 от них не меняется по смыслу.
         for flip in (lambda t: t.flip(-1), lambda t: t.flip(-2), lambda t: t.transpose(-1, -2)):
             if rng.random() < 0.5:
                 lq, gt = flip(lq), flip(gt)
                 pre = flip(pre) if pre is not None else None
+                boost = flip(boost) if boost is not None else None
 
         out = model(lq)
         loss = 0.0
@@ -351,7 +426,13 @@ def main() -> None:
             with torch.no_grad():
                 target = pre if pre is not None else teacher(clean_input(gt))
                 w = ink_weight(target, args.ink) if args.ink else None
+                if boost is not None:
+                    w = boost if w is None else w * boost
             loss += args.teacher * (wl1(out, target, w) + args.edge * wl1(sobel(out), sobel(target), w))
+        if args.texture:
+            tex = F.l1_loss(band_energy(out), band_energy(gt))
+            loss = loss + args.texture * tex
+            texture_running += tex.item()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
@@ -360,8 +441,9 @@ def main() -> None:
 
         if it % 200 == 0:
             rate = it / (time.time() - started)
-            say(f"{it:>6}  loss {running / 200:.5f}  lr {sched.get_last_lr()[0]:.2e}  {rate:.1f} it/s")
-            running = 0.0
+            tail = f"  фактура {texture_running / 200:.5f}" if args.texture else ""
+            say(f"{it:>6}  loss {running / 200:.5f}{tail}  lr {sched.get_last_lr()[0]:.2e}  {rate:.1f} it/s")
+            running = texture_running = 0.0
         if it % args.every == 0 or it == args.iters:
             vs_gt, vs_teacher = validate(model, teacher, device)
             # «Лучший» — по той цели, к которой модель и тянется.
@@ -375,7 +457,8 @@ def main() -> None:
                 best = value
                 torch.save(state, args.run / "best.pt")
                 mark = "  ← лучший"
-            say(f"{it:>6}  val PSNR к эталону {vs_gt:.3f} дБ, к учителю {vs_teacher:.3f} дБ{mark}")
+            tail = f", текст {validate_text(model, text, device):.3f} дБ" if text is not None else ""
+            say(f"{it:>6}  val PSNR к эталону {vs_gt:.3f} дБ, к учителю {vs_teacher:.3f} дБ{tail}{mark}")
 
     model = build(plain_arch)
     model.load_state_dict(torch.load(args.run / "best.pt"))

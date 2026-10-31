@@ -186,7 +186,14 @@ def random_degrade(
     if scale > 1:
         h, w = img.shape[:2]
         img = cv2.resize(img, (w // scale, h // scale), interpolation=cv2.INTER_AREA)
+    # Средний кадр панорамы не сдвинут, так что эталон к нему — сам `gt`.
+    return degrade_input(img, rng), gt
 
+
+def degrade_input(img: np.ndarray, rng: np.random.Generator) -> np.ndarray:
+    """Порча уже уменьшенного входа: смягчение, нерезкая маска, зерно, x264
+    релиз-группы и Kodik. Отдельно — для пар с текстом (`text_pairs.py`):
+    там вход собирается из чистого фона и размытого слоя надписи."""
     clip = pan_clip(img, rng.choice([0.0, rng.uniform(0.5, 4.0)]))
     soft = rng.uniform(0.4, 0.9)
     down = cv2.INTER_LANCZOS4 if rng.random() < 0.5 else cv2.INTER_AREA
@@ -205,5 +212,4 @@ def random_degrade(
         out = x264_roundtrip(frames, rng.uniform(14, 24), UPSTREAM_PARAMS)
     else:
         out = x264_roundtrip(frames, rng.uniform(24, 40))
-    # Средний кадр панорамы не сдвинут, так что эталон к нему — сам `gt`.
-    return out[CLIP_LEN // 2], gt
+    return out[CLIP_LEN // 2]

@@ -5,6 +5,7 @@
     python teacher_cache.py blend train128 teacher-compact.npy teacher-apisr.npy 0.75 teacher-compact-apisr075.npy
     python teacher_cache.py runs/u48r-compact/it80000.pt train128 teacher-u48-2.npy
     python teacher_cache.py runs/u48r-compact/it80000.pt train128 teacher-u48-2-lq.npy lq
+    python teacher_cache.py runs/u48r-csdaulq/it100000.pt train128 teacher-u48-3-restore.npy lq-restore
     python teacher_cache.py ink train128 teacher-c-sd3-a075k5.npy teacher-u48-2.npy teacher-c-sd3-a075k5-u.npy
 
 Цель обучения с `--teacher 1` — учитель на эталоне, уменьшенном 2×2
@@ -18,7 +19,8 @@ uint8 BGR той же формы, что `gt.npy` (округление до у�
 сети (`load_any`).
 
 Последний аргумент `lq` — учитель на порченом входе пары (`lq.npy`), как
-ученик и как на Kodik: так считаются линии U48-2 для `ink` — на чистом входе
+ученик и как на Kodik; `lq-restore` — то же, но вход сперва проходит Restore
+CNNM из Anime4K (Э23: цель «U48-3 после Restore» для дистилляции): так считаются линии U48-2 для `ink` — на чистом входе
 она рисует штрих тоньше, чем может повторить ученик (Э20).
 
 `blend` складывает цель из двух кэшей (Э20): низ первого + верх второго —
@@ -38,6 +40,7 @@ import cv2
 import numpy as np
 import torch
 
+from anime4k import Anime4K
 from teacher_eval import ink_overlay
 from train import DATA, clean_input, load_any, onnx_compact, to_tensor
 
@@ -93,15 +96,19 @@ def main() -> None:
         blend(data, base, detail, float(sigma), name, float(k[0]) if k else 1.0)
         return
     model_path, data, name, *source = sys.argv[1:]
-    from_lq = source == ["lq"]
+    from_lq = source in (["lq"], ["lq-restore"])
+    restore = Anime4K("Anime4K_Restore_CNN_M.glsl") if source == ["lq-restore"] else None
     device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
     teacher = load_teacher(Path(model_path)).to(device).eval()
+    restore = restore.to(device) if restore is not None else None
     gt_all = np.load(DATA / data / "gt.npy", mmap_mode="r")
     src_all = np.load(DATA / data / "lq.npy", mmap_mode="r") if from_lq else gt_all
     out = np.lib.format.open_memmap(DATA / data / name, "w+", np.uint8, gt_all.shape)
     with torch.no_grad():
         for start in range(0, len(gt_all), BATCH):
             src = to_tensor(src_all[start : start + BATCH], device)
+            if restore is not None:
+                src = restore(src).clamp(0, 1)
             rgb = teacher(src if from_lq else clean_input(src)).clamp(0, 1).permute(0, 2, 3, 1)
             out[start : start + len(src)] = (rgb * 255 + 0.5).byte().cpu().numpy()[..., ::-1]
             if start // BATCH % 50 == 0:
