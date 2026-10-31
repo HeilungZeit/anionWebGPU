@@ -107,6 +107,11 @@ async function presetOptions(mode, precision) {
     model: await loadCompactModel($('compactWeights').value),
     kernel: $('compactKernel').value,
     chromaSigma: Number($('compactChroma').value),
+    deband: $('deband').checked && {
+      threshold: Number($('debandThreshold').value),
+      range: Number($('debandRange').value),
+      iterations: Number($('debandIterations').value),
+    },
   };
 }
 
@@ -452,6 +457,7 @@ async function run() {
             $('compactKernel').value,
             weights !== COMPACT_REFERENCE_WEIGHTS ? weights : '',
             `σ${$('compactChroma').value}`,
+            $('deband').checked ? `deband${$('debandThreshold').value}r${$('debandRange').value}i${$('debandIterations').value}` : '',
           ].filter(Boolean).join('/')
           : (denoiseModel !== 'VL' && denoiseModel) || '';
         const variant = [size, useF16 && !compact ? 'f16' : ''].filter(Boolean).join('/');

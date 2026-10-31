@@ -1,4 +1,5 @@
 import { Downscale, FrameGate } from '../../helpers';
+import { Deband, DebandParams } from '../../denoise/Deband';
 import { Anime4KPipeline, Anime4KPresetPipelineDescriptor, whenReady } from '../../interfaces';
 import { CompactKernel, CompactModelData, CompactSR } from '../../compact';
 
@@ -20,6 +21,11 @@ export interface ModeCompactPresetPipelineDescriptor extends Anime4KPresetPipeli
    * 0 — цветность сети, как до Э12. См. CompactPipelineDescriptor.
    */
   chromaSigma?: number;
+  /**
+   * Дебандинг до сети (Э21): `true` — с параметрами по умолчанию, объект —
+   * со своими. По умолчанию выключен: выход тот же, что в 1.x.
+   */
+  deband?: boolean | DebandParams;
 }
 
 /**
@@ -37,9 +43,12 @@ export class ModeCompact implements Anime4KPipeline {
   /** Ворота повторов (skipUnchanged): счётчики — gate.readStats(). */
   gate?: FrameGate;
 
+  /** Дебандинг (deband): параметры меняются на ходу — deband.set(). */
+  deband?: Deband;
+
   constructor({
     device, inputTexture, nativeDimensions, targetDimensions, model, kernel,
-    skipUnchanged = false, unchangedThreshold = 0, chromaSigma = 2,
+    skipUnchanged = false, unchangedThreshold = 0, chromaSigma = 2, deband,
   }: ModeCompactPresetPipelineDescriptor) {
     let currentTexture = inputTexture;
     if (targetDimensions.width > 1.2 * nativeDimensions.width
@@ -50,6 +59,16 @@ export class ModeCompact implements Anime4KPipeline {
         : undefined;
       if (gate) this.pipelines.push(gate);
       this.gate = gate;
+
+      // До сети: ступенька градиента иначе прорисовывается как край. Ворота
+      // сравнивают исходный кадр — дебандинг на их решение не влияет.
+      if (deband) {
+        this.deband = new Deband({
+          device, inputTexture: currentTexture, gate, ...(deband === true ? {} : deband),
+        });
+        this.pipelines.push(this.deband);
+        currentTexture = this.deband.getOutputTexture();
+      }
 
       const upscale = new CompactSR({
         device, inputTexture: currentTexture, model, kernel, gate, chromaSigma,
